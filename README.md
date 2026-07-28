@@ -29,6 +29,7 @@ including the old bridge's failure caught live in the same run.
 - **`sockrelay-server`** (Windows, cross-compiled and run via WSL binfmt interop — see
   [Building](#building) below) accepts yamux streams from the client and relays each one to a
   fresh handle on the real `ssh-agent` named pipe.
+
 Just two crates — an earlier `sockrelay-common` (shared mux error types and a byte-relay helper)
 was folded back in once one of its two pieces turned out to be single-consumer: `MuxError` is now
 duplicated verbatim in both `client::mux` and `server::mux` (identical, 9 lines, cheaper to keep in
@@ -64,7 +65,7 @@ sockrelay-client
   --server-exe <PATH>                     default: "sockrelay-server.exe", searched via PATH
   --socket-mode <OCTAL>                   default: 600
   --accept-error-backoff-ms <MS>          default: 100
-  --log-file <PATH>                       default: /dev/null — see Logging below
+  --log-file <PATH>                       default: unset (no file written) — see Logging below
   --foreground                            default: off — see Running below
   --pipe-path <PATH>                      default: \\.\pipe\openssh-ssh-agent — forwarded to the spawned server
   --connect-timeout-secs <N>              default: 5 — forwarded to the spawned server
@@ -150,18 +151,21 @@ sockrelay-client && export SSH_AUTH_SOCK=~/.ssh/agent.sock
 
 ## Logging
 
-`--log-file` (default `/dev/null`) controls where timestamped diagnostics end up once daemonized —
-both `sockrelay-client`'s own, and the spawned `sockrelay-server`'s (its stderr is piped and
-forwarded verbatim into the same sink, since it has no concept of a log file, or of this process's
-`--log-file`, at all — it just writes to its own stderr exactly as if run directly).
+`--log-file`, unset by default, controls where timestamped diagnostics *also* end up once
+daemonized — both `sockrelay-client`'s own, and the spawned `sockrelay-server`'s (its stderr is
+piped and forwarded verbatim into the same sink, since it has no concept of a log file, or of this
+process's `--log-file`, at all — it just writes to its own stderr exactly as if run directly). If
+`--log-file` isn't given, no file is ever opened — there's no implicit fallback path standing in
+for "no file".
 
-Every diagnostic always reaches `--log-file` (or `/dev/null`, discarding it). Whether it *also*
-reaches stderr depends on daemonization, not on `--log-file` itself: before a successful start, it
-always does — this is what lets a startup failure surface immediately to whoever ran the command
-(see [Running](#running) above) — and after a successful *daemonized* start, it stops, since
+Whether a diagnostic *also* reaches stderr is a fully independent question from `--log-file`,
+governed by daemonization rather than by the flag: before a successful start, it always does — this
+is what lets a startup failure surface immediately to whoever ran the command (see
+[Running](#running) above) — and after a successful *daemonized* start, it stops, since
 `detach_stdio` releases the terminal at that point anyway. With `--foreground`, there's no
-detaching at all, so output keeps reaching both stderr and `--log-file` for as long as the process
-runs — the natural behavior for something a supervisor or an interactive user is watching directly.
+detaching at all, so output keeps reaching stderr (and `--log-file`, if given) for as long as the
+process runs — the natural behavior for something a supervisor or an interactive user is watching
+directly.
 
 ```sh
 sockrelay-client --log-file ~/.cache/sockrelay/client.log
