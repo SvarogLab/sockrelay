@@ -37,9 +37,9 @@ sync by hand than to maintain a whole extra crate for), and the byte-relay helpe
 `client::relay`, its only remaining caller.
 
 A separate load-testing tool used during this project's own development to measure behavior under
-concurrent load against the real agent lives in a sibling repository,
-[`sockrelay-loadtest`](../sockrelay-loadtest) — it isn't part of this workspace, since it has no
-dependency on any of the crates above.
+concurrent load against the real agent lives in its own repository,
+[`sockrelay-loadtest`](https://github.com/ffaxl/tools-sockrelay-loadtest) — it isn't part of this
+workspace, since it has no dependency on any of the crates above.
 
 Neither `sockrelay-client` nor `sockrelay-server` parses the bytes flowing through them — no
 framing, no message boundaries, nothing that assumes ssh-agent's wire format; both just relay raw

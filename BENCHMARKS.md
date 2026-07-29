@@ -1,8 +1,8 @@
 # Benchmarks: sockrelay vs. the old socat+npiperelay bridge
 
-Both measured with [`sockrelay-loadtest`](../sockrelay-loadtest), same parameters, same real
-Windows OpenSSH agent, back to back, on the same machine — 32 concurrent clients, 15 seconds,
-fresh connect-per-request (matching real `ssh`/`ssh-add` behavior).
+Both measured with [`sockrelay-loadtest`](https://github.com/ffaxl/tools-sockrelay-loadtest), same
+parameters, same real Windows OpenSSH agent, back to back, on the same machine — 32 concurrent
+clients, 15 seconds, fresh connect-per-request (matching real `ssh`/`ssh-add` behavior).
 
 The old bridge was run on a throwaway socket path alongside the live, already-running `sockrelay`
 daemon, so this isn't a cold-start comparison — both were warmed up and otherwise idle.
