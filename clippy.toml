@@ -1,0 +1,3 @@
+# Only non-default options. Add a threshold here when a lint fires on code that is
+# correct as written, and say in a comment which code and why - an unexplained
+# threshold is indistinguishable from silencing a real finding.
