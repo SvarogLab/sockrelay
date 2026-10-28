@@ -3,6 +3,8 @@ mod log_sink;
 mod mux;
 mod relay;
 mod spawn;
+#[cfg(test)]
+mod test_support;
 mod unix_listener;
 
 use std::io::Write;
