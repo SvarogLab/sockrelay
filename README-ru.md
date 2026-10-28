@@ -203,6 +203,19 @@ shell-конфиги и не останавливает никакой уже з
 ./install.sh
 ```
 
+### Готовые бинарники
+
+Каждый [релиз](https://github.com/SvarogLab/sockrelay/releases) содержит клиент для Linux
+(`sockrelay-client-linux-amd64`, `sockrelay-client-linux-arm64`, статические сборки под musl) и
+сервер для Windows (`sockrelay-server-windows-amd64.exe`, `sockrelay-server-windows-arm64.exe`), с
+контрольными суммами в `SHA256SUMS`. Каждый собран и протестирован на раннере своей архитектуры.
+
+### Выпуск релиза
+
+Запусти workflow **Release PR** на вкладке Actions. Он откроет `chore: release vX.Y.Z` с версией,
+которую git-cliff вычисляет из коммитов после последнего тега, и с перегенерированным
+`CHANGELOG.md`; мерж этого PR ставит тег и публикует релиз.
+
 ## Тестирование
 
 ```sh

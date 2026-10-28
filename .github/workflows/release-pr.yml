@@ -1,0 +1,22 @@
+name: Release PR
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Version to release; empty computes it from the commits since the last tag.
+        required: false
+
+permissions:
+  contents: read
+
+jobs:
+  release-pr:
+    uses: SvarogLab/.github/.github/workflows/release-pr.yml@v1
+    permissions:
+      contents: write
+      pull-requests: write
+    with:
+      version: ${{ inputs.version }}
+      # The workspace carries the one version both crates inherit.
+      bump: sed -i "s/^version = \".*\"/version = \"$VERSION_NUMBER\"/" Cargo.toml

@@ -196,6 +196,19 @@ the actual wiring-up to you:
 ./install.sh
 ```
 
+### Prebuilt binaries
+
+Each [release](https://github.com/SvarogLab/sockrelay/releases) carries the client for Linux
+(`sockrelay-client-linux-amd64`, `sockrelay-client-linux-arm64`, static musl builds) and the server
+for Windows (`sockrelay-server-windows-amd64.exe`, `sockrelay-server-windows-arm64.exe`), with
+their checksums in `SHA256SUMS`. Each is built and tested on its own architecture's runner.
+
+### Releasing
+
+Run the **Release PR** workflow from the Actions tab. It opens `chore: release vX.Y.Z` with the
+version git-cliff computes from the commits since the last tag and a regenerated `CHANGELOG.md`;
+merging it tags the commit and publishes the release.
+
 ## Testing
 
 ```sh

@@ -7,7 +7,7 @@ version = "0.1.0"
 edition = "2024"
 publish = false
 license = "MIT OR Apache-2.0"
-repository = "https://github.com/ffaxl/tools-sockrelay"
+repository = "https://github.com/SvarogLab/sockrelay"
 description = "Relays a Windows ssh-agent named pipe to a WSL/Linux unix socket over a single multiplexed connection, so parallel SSH connections stop each spawning their own Windows-side process"
 
 [workspace.dependencies]
