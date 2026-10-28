@@ -99,6 +99,7 @@ mod tests {
     /// with `into_inner()` and dropping the writer half, not calling `.shutdown()` on it.
     #[tokio::test]
     async fn take_io_relays_bytes_through_the_child() {
+        let _children = crate::test_support::CHILD_PROCESSES.read().await;
         let mut server = SpawnedServer::spawn("cat", Vec::new()).await.unwrap();
         let io = server.take_io().unwrap();
 
@@ -119,6 +120,7 @@ mod tests {
 
     #[tokio::test]
     async fn take_io_twice_fails() {
+        let _children = crate::test_support::CHILD_PROCESSES.read().await;
         let mut server = SpawnedServer::spawn("cat", Vec::new()).await.unwrap();
         server.take_io().unwrap();
         assert!(matches!(server.take_io(), Err(SpawnError::MissingStdio)));
@@ -126,6 +128,7 @@ mod tests {
 
     #[tokio::test]
     async fn take_stderr_reads_the_childs_stderr_independently_of_stdio() {
+        let _children = crate::test_support::CHILD_PROCESSES.read().await;
         let mut server = SpawnedServer::spawn(
             "sh",
             vec!["-c".to_string(), "echo hello, stderr >&2".to_string()],
@@ -148,6 +151,7 @@ mod tests {
 
     #[tokio::test]
     async fn take_stderr_twice_fails() {
+        let _children = crate::test_support::CHILD_PROCESSES.read().await;
         let mut server = SpawnedServer::spawn("cat", Vec::new()).await.unwrap();
         server.take_stderr().unwrap();
         assert!(matches!(
@@ -158,6 +162,7 @@ mod tests {
 
     #[tokio::test]
     async fn wait_resolves_once_the_child_exits() {
+        let _children = crate::test_support::CHILD_PROCESSES.read().await;
         let mut server = SpawnedServer::spawn("true", Vec::new()).await.unwrap();
         let status = tokio::time::timeout(std::time::Duration::from_secs(5), server.wait())
             .await
@@ -168,6 +173,7 @@ mod tests {
 
     #[tokio::test]
     async fn spawn_of_a_nonexistent_binary_fails() {
+        let _children = crate::test_support::CHILD_PROCESSES.read().await;
         match SpawnedServer::spawn("/no/such/sockrelay-server.exe", Vec::new()).await {
             Err(SpawnError::Spawn { .. }) => {}
             other => panic!("expected SpawnError::Spawn, got {}", other.is_ok()),

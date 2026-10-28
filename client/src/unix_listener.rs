@@ -246,6 +246,7 @@ mod tests {
     #[tokio::test]
     async fn bind_reclaims_a_stale_socket_file() {
         let _guard = UMASK_TEST_LOCK.lock().await;
+        let _no_children = crate::test_support::CHILD_PROCESSES.write().await;
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("agent.sock");
 
