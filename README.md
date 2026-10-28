@@ -198,7 +198,7 @@ the actual wiring-up to you:
 
 ### Prebuilt binaries
 
-Each [release](https://github.com/ffaxl/tools-sockrelay/releases) carries the client for Linux
+Each [release](https://github.com/SvarogLab/sockrelay/releases) carries the client for Linux
 (`sockrelay-client-linux-amd64`, `sockrelay-client-linux-arm64`, static musl builds) and the server
 for Windows (`sockrelay-server-windows-amd64.exe`, `sockrelay-server-windows-arm64.exe`), with
 their checksums in `SHA256SUMS`. Each is built and tested on its own architecture's runner.

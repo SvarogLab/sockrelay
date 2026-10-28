@@ -205,7 +205,7 @@ shell-конфиги и не останавливает никакой уже з
 
 ### Готовые бинарники
 
-Каждый [релиз](https://github.com/ffaxl/tools-sockrelay/releases) содержит клиент для Linux
+Каждый [релиз](https://github.com/SvarogLab/sockrelay/releases) содержит клиент для Linux
 (`sockrelay-client-linux-amd64`, `sockrelay-client-linux-arm64`, статические сборки под musl) и
 сервер для Windows (`sockrelay-server-windows-amd64.exe`, `sockrelay-server-windows-arm64.exe`), с
 контрольными суммами в `SHA256SUMS`. Каждый собран и протестирован на раннере своей архитектуры.
