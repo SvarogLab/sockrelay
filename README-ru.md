@@ -243,7 +243,7 @@ interop и так запускает бинарник напрямую, — по
 кросс-компиляция всего workspace под Windows падает на не относящихся к делу ошибках в этом
 крейте. Валидная сборка под Windows-таргет — только `-p sockrelay-server`.
 
-CI прогоняет те же проверки на каждый push и pull request, а также ежедневно на `main`: workspace на
+CI прогоняет те же проверки на каждый pull request, каждый push в `main` и ежедневно: workspace на
 Linux для amd64 и arm64 и `-p sockrelay-server` нативно на Windows для amd64 и arm64.
 
 ## Заметки по безопасности
