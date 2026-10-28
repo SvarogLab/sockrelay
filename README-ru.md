@@ -203,6 +203,19 @@ shell-конфиги и не останавливает никакой уже з
 ./install.sh
 ```
 
+### Готовые бинарники
+
+Каждый [релиз](https://github.com/ffaxl/tools-sockrelay/releases) содержит клиент для Linux
+(`sockrelay-client-linux-amd64`, `sockrelay-client-linux-arm64`, статические сборки под musl) и
+сервер для Windows (`sockrelay-server-windows-amd64.exe`, `sockrelay-server-windows-arm64.exe`), с
+контрольными суммами в `SHA256SUMS`. Каждый собран и протестирован на раннере своей архитектуры.
+
+### Выпуск релиза
+
+Запусти workflow **Release PR** на вкладке Actions. Он откроет `chore: release vX.Y.Z` с версией,
+которую git-cliff вычисляет из коммитов после последнего тега, и с перегенерированным
+`CHANGELOG.md`; мерж этого PR ставит тег и публикует релиз.
+
 ## Тестирование
 
 ```sh
@@ -229,6 +242,9 @@ interop и так запускает бинарник напрямую, — по
 `sockrelay-client` — целиком unix-специфичный код без Windows-совместимых заглушек, поэтому
 кросс-компиляция всего workspace под Windows падает на не относящихся к делу ошибках в этом
 крейте. Валидная сборка под Windows-таргет — только `-p sockrelay-server`.
+
+CI прогоняет те же проверки на каждый push и pull request, а также ежедневно на `main`: workspace на
+Linux для amd64 и arm64 и `-p sockrelay-server` нативно на Windows для amd64 и arm64.
 
 ## Заметки по безопасности
 

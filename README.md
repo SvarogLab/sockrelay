@@ -196,6 +196,19 @@ the actual wiring-up to you:
 ./install.sh
 ```
 
+### Prebuilt binaries
+
+Each [release](https://github.com/ffaxl/tools-sockrelay/releases) carries the client for Linux
+(`sockrelay-client-linux-amd64`, `sockrelay-client-linux-arm64`, static musl builds) and the server
+for Windows (`sockrelay-server-windows-amd64.exe`, `sockrelay-server-windows-arm64.exe`), with
+their checksums in `SHA256SUMS`. Each is built and tested on its own architecture's runner.
+
+### Releasing
+
+Run the **Release PR** workflow from the Actions tab. It opens `chore: release vX.Y.Z` with the
+version git-cliff computes from the commits since the last tag and a regenerated `CHANGELOG.md`;
+merging it tags the commit and publishes the release.
+
 ## Testing
 
 ```sh
@@ -221,6 +234,9 @@ variable is explicitly unset before falling back to plain `cargo test`/`cargo bu
 `sockrelay-client` is unix-only code with no Windows-compat shims, so cross-compiling the whole
 workspace for Windows fails on unrelated errors in that crate. Only `-p sockrelay-server` is a
 valid Windows-target build.
+
+CI runs the same checks on every push and pull request, and daily on `main`: the workspace on
+Linux for amd64 and arm64, and `-p sockrelay-server` natively on Windows for amd64 and arm64.
 
 ## Security notes
 

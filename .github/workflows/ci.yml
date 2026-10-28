@@ -1,0 +1,50 @@
+# The workspace is checked on Linux, and the server's named-pipe side, which only compiles for
+# Windows, on Windows. A merged `chore: release vX` commit is tagged and released with the client
+# for Linux and the server for Windows, each built on its own arch's runner.
+name: CI
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+  schedule:
+    - cron: "0 6 * * *"
+
+permissions:
+  contents: read
+
+jobs:
+  rust:
+    uses: SvarogLab/.github/.github/workflows/rust.yml@feat/shared-ci
+    with:
+      binaries: sockrelay-client
+      build-args: -p sockrelay-client
+      windows-args: -p sockrelay-server
+      windows-binaries: sockrelay-server
+
+  tag:
+    needs: rust
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    uses: SvarogLab/.github/.github/workflows/tag-release.yml@feat/shared-ci
+    permissions:
+      contents: write
+
+  release:
+    needs: tag
+    if: needs.tag.outputs.tag != ''
+    uses: SvarogLab/.github/.github/workflows/release.yml@feat/shared-ci
+    permissions:
+      contents: write
+    with:
+      tag: ${{ needs.tag.outputs.tag }}
+      download-binaries: true
+      prepare: |
+        cp binaries/amd64/release/sockrelay-client sockrelay-client-linux-amd64
+        cp binaries/arm64/release/sockrelay-client sockrelay-client-linux-arm64
+        cp binaries/windows-amd64/release/sockrelay-server.exe sockrelay-server-windows-amd64.exe
+        cp binaries/windows-arm64/release/sockrelay-server.exe sockrelay-server-windows-arm64.exe
+        sha256sum sockrelay-client-linux-* sockrelay-server-windows-* > SHA256SUMS
+      assets: >-
+        sockrelay-client-linux-amd64 sockrelay-client-linux-arm64
+        sockrelay-server-windows-amd64.exe sockrelay-server-windows-arm64.exe
+        SHA256SUMS
