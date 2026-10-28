@@ -235,9 +235,6 @@ variable is explicitly unset before falling back to plain `cargo test`/`cargo bu
 workspace for Windows fails on unrelated errors in that crate. Only `-p sockrelay-server` is a
 valid Windows-target build.
 
-CI runs the same checks on every pull request, every push to `main` and daily: the workspace on
-Linux for amd64 and arm64, and `-p sockrelay-server` natively on Windows for amd64 and arm64.
-
 ## Security notes
 
 - The unix socket is created with the process umask temporarily restricted so its permission bits
