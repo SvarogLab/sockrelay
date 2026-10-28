@@ -139,7 +139,9 @@ fn main() -> std::process::ExitCode {
             return std::process::ExitCode::FAILURE;
         }
     };
-    tracing_subscriber::fmt().with_writer(log_sink.clone()).init();
+    tracing_subscriber::fmt()
+        .with_writer(log_sink.clone())
+        .init();
 
     if config.foreground {
         run(config, socket_path, log_sink, Mode::Foreground);
@@ -316,7 +318,10 @@ fn run(config: Config, socket_path: PathBuf, log_sink: LogSink, mode: Mode) -> !
 /// server exited, or closed its own stderr). Deliberately not line-aware or otherwise parsed —
 /// the server's own `tracing` setup already produced complete, formatted lines; this only needs
 /// to move bytes, not understand them.
-async fn forward_server_stderr(mut server_stderr: tokio::process::ChildStderr, mut log_sink: LogSink) {
+async fn forward_server_stderr(
+    mut server_stderr: tokio::process::ChildStderr,
+    mut log_sink: LogSink,
+) {
     let mut buf = [0u8; 4096];
     loop {
         match server_stderr.read(&mut buf).await {

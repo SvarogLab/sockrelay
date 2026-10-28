@@ -216,14 +216,19 @@ mod tests {
         let (tx, mut rx) = mpsc::unbounded_channel::<Vec<u8>>();
         let accept_path = path.clone();
         tokio::spawn(async move {
-            let _ = accept_loop(accept_path, listener, Duration::from_millis(100), move |mut stream| {
-                let tx = tx.clone();
-                async move {
-                    let mut buf = Vec::new();
-                    let _ = stream.read_to_end(&mut buf).await;
-                    let _ = tx.send(buf);
-                }
-            })
+            let _ = accept_loop(
+                accept_path,
+                listener,
+                Duration::from_millis(100),
+                move |mut stream| {
+                    let tx = tx.clone();
+                    async move {
+                        let mut buf = Vec::new();
+                        let _ = stream.read_to_end(&mut buf).await;
+                        let _ = tx.send(buf);
+                    }
+                },
+            )
             .await;
         });
 
@@ -246,7 +251,10 @@ mod tests {
 
         let listener = UnixListener::bind(&path).unwrap();
         drop(listener); // no unlink — this is exactly the "unclean exit" scenario
-        assert!(path.exists(), "test setup: socket file should linger after drop");
+        assert!(
+            path.exists(),
+            "test setup: socket file should linger after drop"
+        );
 
         bind_reclaiming_stale(&path, 0o600)
             .await
