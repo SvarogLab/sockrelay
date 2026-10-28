@@ -57,7 +57,9 @@ impl LogSink {
 impl Write for LogSink {
     fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
         if let Some(file) = &self.file {
-            file.lock().expect("log file mutex poisoned").write_all(buf)?;
+            file.lock()
+                .expect("log file mutex poisoned")
+                .write_all(buf)?;
         }
         if self.attached_to_terminal.load(Ordering::Relaxed) {
             // Best-effort: a full stderr (e.g. a closed terminal) must not stop logging.

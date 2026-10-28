@@ -12,7 +12,9 @@ async fn main() {
     // Must write to stderr, not the default stdout: this process's own stdout *is* the yamux
     // transport (joined with stdin below) — any tracing output on stdout would land in the
     // middle of the binary frame stream and corrupt it.
-    tracing_subscriber::fmt().with_writer(std::io::stderr).init();
+    tracing_subscriber::fmt()
+        .with_writer(std::io::stderr)
+        .init();
 
     let config = Config::parse();
 

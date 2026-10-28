@@ -348,7 +348,8 @@ mod tests {
             other => panic!("expected the sole instance to be busy, got {other:?}"),
         }
 
-        let connect_task = tokio::spawn(async move { connect(&path, PipeSettings::default()).await });
+        let connect_task =
+            tokio::spawn(async move { connect(&path, PipeSettings::default()).await });
 
         // Gives the spawned task time to run its first (busy) open attempt and enter the real
         // `WaitNamedPipeW` blocking call before we free the instance below.

@@ -150,7 +150,10 @@ mod tests {
     async fn take_stderr_twice_fails() {
         let mut server = SpawnedServer::spawn("cat", Vec::new()).await.unwrap();
         server.take_stderr().unwrap();
-        assert!(matches!(server.take_stderr(), Err(SpawnError::MissingStdio)));
+        assert!(matches!(
+            server.take_stderr(),
+            Err(SpawnError::MissingStdio)
+        ));
     }
 
     #[tokio::test]

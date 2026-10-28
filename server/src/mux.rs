@@ -1,4 +1,4 @@
-use std::future::{poll_fn, Future};
+use std::future::{Future, poll_fn};
 use std::task::{Context, Poll};
 
 use tokio_util::compat::TokioAsyncReadCompatExt;
@@ -41,7 +41,8 @@ pub fn server<T>(io: T) -> (MuxAcceptor, impl Future<Output = Result<(), MuxErro
 where
     T: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
 {
-    let connection = yamux::Connection::new(io.compat(), yamux::Config::default(), yamux::Mode::Server);
+    let connection =
+        yamux::Connection::new(io.compat(), yamux::Config::default(), yamux::Mode::Server);
     // Unbounded: yamux itself already caps the number of live streams per connection (default
     // 512, see `yamux::Config`), so there's a natural upper bound on outstanding items without
     // needing bounded-channel backpressure logic here too.
@@ -51,7 +52,10 @@ where
         accept_tx,
         closing: false,
     };
-    (MuxAcceptor { accept_rx }, poll_fn(move |cx| driver.poll_drive(cx)))
+    (
+        MuxAcceptor { accept_rx },
+        poll_fn(move |cx| driver.poll_drive(cx)),
+    )
 }
 
 struct Driver<T> {
@@ -146,35 +150,36 @@ mod tests {
     {
         let mut connection =
             yamux::Connection::new(io.compat(), yamux::Config::default(), yamux::Mode::Client);
-        let (open_tx, mut open_rx) = tokio::sync::mpsc::unbounded_channel::<
-            tokio::sync::oneshot::Sender<yamux::Stream>,
-        >();
+        let (open_tx, mut open_rx) =
+            tokio::sync::mpsc::unbounded_channel::<tokio::sync::oneshot::Sender<yamux::Stream>>();
 
         tokio::spawn(async move {
             let mut pending: Option<tokio::sync::oneshot::Sender<yamux::Stream>> = None;
-            poll_fn(|cx| loop {
-                if let Some(reply) = pending.take() {
-                    match connection.poll_new_outbound(cx) {
-                        Poll::Ready(Ok(stream)) => {
-                            let _ = reply.send(stream);
-                            continue;
+            poll_fn(|cx| {
+                loop {
+                    if let Some(reply) = pending.take() {
+                        match connection.poll_new_outbound(cx) {
+                            Poll::Ready(Ok(stream)) => {
+                                let _ = reply.send(stream);
+                                continue;
+                            }
+                            Poll::Ready(Err(_)) => return Poll::Ready(()),
+                            Poll::Pending => pending = Some(reply),
                         }
-                        Poll::Ready(Err(_)) => return Poll::Ready(()),
-                        Poll::Pending => pending = Some(reply),
-                    }
-                } else {
-                    match open_rx.poll_recv(cx) {
-                        Poll::Ready(Some(reply)) => {
-                            pending = Some(reply);
-                            continue;
+                    } else {
+                        match open_rx.poll_recv(cx) {
+                            Poll::Ready(Some(reply)) => {
+                                pending = Some(reply);
+                                continue;
+                            }
+                            Poll::Ready(None) | Poll::Pending => {}
                         }
-                        Poll::Ready(None) | Poll::Pending => {}
                     }
-                }
-                match connection.poll_next_inbound(cx) {
-                    Poll::Ready(Some(_)) => continue,
-                    Poll::Ready(None) => return Poll::Ready(()),
-                    Poll::Pending => return Poll::Pending,
+                    match connection.poll_next_inbound(cx) {
+                        Poll::Ready(Some(_)) => continue,
+                        Poll::Ready(None) => return Poll::Ready(()),
+                        Poll::Pending => return Poll::Pending,
+                    }
                 }
             })
             .await;

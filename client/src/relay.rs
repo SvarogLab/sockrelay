@@ -1,4 +1,4 @@
-use tokio::io::{copy_bidirectional, AsyncRead, AsyncWrite};
+use tokio::io::{AsyncRead, AsyncWrite, copy_bidirectional};
 
 /// Relays bytes between `a` and `b` in both directions until either side closes — the byte-pump
 /// for unix-socket↔yamux-stream relaying. A thin wrapper over `tokio::io::copy_bidirectional`,
@@ -27,7 +27,8 @@ mod tests {
         let (mut left_outside, mut left_inside) = tokio::io::duplex(1024);
         let (mut right_inside, mut right_outside) = tokio::io::duplex(1024);
 
-        let relay_task = tokio::spawn(async move { relay(&mut left_inside, &mut right_inside).await });
+        let relay_task =
+            tokio::spawn(async move { relay(&mut left_inside, &mut right_inside).await });
 
         left_outside.write_all(b"ping").await.unwrap();
         let mut buf = [0u8; 4];

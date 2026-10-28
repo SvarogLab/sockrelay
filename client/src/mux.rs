@@ -1,4 +1,4 @@
-use std::future::{poll_fn, Future};
+use std::future::{Future, poll_fn};
 use std::task::{Context, Poll};
 
 use tokio_util::compat::TokioAsyncReadCompatExt;
@@ -53,14 +53,18 @@ pub fn client<T>(io: T) -> (MuxHandle, impl Future<Output = Result<(), MuxError>
 where
     T: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
 {
-    let connection = yamux::Connection::new(io.compat(), yamux::Config::default(), yamux::Mode::Client);
+    let connection =
+        yamux::Connection::new(io.compat(), yamux::Config::default(), yamux::Mode::Client);
     let (open_tx, open_rx) = tokio::sync::mpsc::channel(32);
     let mut driver = Driver {
         connection,
         open_rx,
         pending_reply: None,
     };
-    (MuxHandle { open_tx }, poll_fn(move |cx| driver.poll_drive(cx)))
+    (
+        MuxHandle { open_tx },
+        poll_fn(move |cx| driver.poll_drive(cx)),
+    )
 }
 
 struct Driver<T> {
@@ -96,10 +100,7 @@ where
                     Poll::Ready(None) => {
                         // Every `MuxHandle` was dropped: nothing can request new streams anymore,
                         // so close the connection gracefully instead of driving it forever.
-                        return self
-                            .connection
-                            .poll_close(cx)
-                            .map_err(MuxError::Connection);
+                        return self.connection.poll_close(cx).map_err(MuxError::Connection);
                     }
                     Poll::Pending => {}
                 }

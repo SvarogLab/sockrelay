@@ -22,8 +22,8 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::Arc;
+    use std::sync::atomic::{AtomicBool, Ordering};
 
     #[tokio::test]
     async fn on_disconnect_runs_only_after_the_connection_future_completes() {

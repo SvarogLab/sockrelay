@@ -8,7 +8,9 @@ const DEFAULT_PIPE_PATH: &str = r"\\.\pipe\openssh-ssh-agent";
 
 #[derive(Debug, thiserror::Error)]
 pub enum ConfigError {
-    #[error("could not determine the home directory to build a default socket path; pass --socket explicitly")]
+    #[error(
+        "could not determine the home directory to build a default socket path; pass --socket explicitly"
+    )]
     NoHomeDir,
 }
 
@@ -21,7 +23,9 @@ pub enum ConfigError {
 /// defaults match the values `sockrelay-server` itself used before its own flags were made
 /// mandatory.
 #[derive(Parser, Debug)]
-#[command(about = "sockrelay Linux/WSL-side relay: exposes a unix socket backed by the real Windows ssh-agent")]
+#[command(
+    about = "sockrelay Linux/WSL-side relay: exposes a unix socket backed by the real Windows ssh-agent"
+)]
 pub struct Config {
     /// Unix socket path to listen on. Defaults to `~/.ssh/agent.sock`.
     #[arg(long)]
