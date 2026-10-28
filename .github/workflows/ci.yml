@@ -15,7 +15,7 @@ permissions:
 
 jobs:
   rust:
-    uses: SvarogLab/.github/.github/workflows/rust.yml@feat/shared-ci
+    uses: SvarogLab/.github/.github/workflows/rust.yml@v1
     with:
       binaries: sockrelay-client
       build-args: -p sockrelay-client
@@ -25,14 +25,14 @@ jobs:
   tag:
     needs: rust
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-    uses: SvarogLab/.github/.github/workflows/tag-release.yml@feat/shared-ci
+    uses: SvarogLab/.github/.github/workflows/tag-release.yml@v1
     permissions:
       contents: write
 
   release:
     needs: tag
     if: needs.tag.outputs.tag != ''
-    uses: SvarogLab/.github/.github/workflows/release.yml@feat/shared-ci
+    uses: SvarogLab/.github/.github/workflows/release.yml@v1
     permissions:
       contents: write
     with:

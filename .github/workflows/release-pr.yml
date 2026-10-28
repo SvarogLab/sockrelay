@@ -12,7 +12,7 @@ permissions:
 
 jobs:
   release-pr:
-    uses: SvarogLab/.github/.github/workflows/release-pr.yml@feat/shared-ci
+    uses: SvarogLab/.github/.github/workflows/release-pr.yml@v1
     permissions:
       contents: write
       pull-requests: write
