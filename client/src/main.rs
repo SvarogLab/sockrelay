@@ -16,7 +16,7 @@ use clap::Parser;
 use futures::FutureExt;
 use tokio_util::compat::FuturesAsyncReadCompatExt;
 
-use config::Config;
+use config::{Config, ListenOn};
 use log_sink::LogSink;
 use mux::MuxHandle;
 use spawn::{SpawnError, SpawnedServer};
@@ -74,10 +74,19 @@ impl Mode {
     /// interactive terminal), since there's nothing to detach from.
     fn succeed(&self, log_sink: &LogSink) {
         tracing::info!("started");
-        if let Mode::Daemon { write_fd } = self {
-            report(*write_fd, 0);
-            log_sink.detach();
-            detach_stdio();
+        match self {
+            // A no-op unless systemd runs this as `Type=notify`, which then counts the service as
+            // started only now, after the grace period, rather than at exec.
+            Mode::Foreground => {
+                if let Err(e) = sd_notify::notify(&[sd_notify::NotifyState::Ready]) {
+                    tracing::warn!(error = %e, "failed to notify systemd of readiness");
+                }
+            }
+            Mode::Daemon { write_fd } => {
+                report(*write_fd, 0);
+                log_sink.detach();
+                detach_stdio();
+            }
         }
     }
 
@@ -117,13 +126,25 @@ impl Mode {
 /// those few early failures use `eprintln!` instead; everything after uses `tracing::error!`
 /// consistently, both here and in `run`.
 fn main() -> std::process::ExitCode {
+    // SAFETY: still single-threaded — no runtime, no other thread exists yet. Unsetting
+    // `LISTEN_PID`/`LISTEN_FDS` keeps the spawned server from seeing sockets meant for this
+    // process; the fds themselves come back close-on-exec.
+    let inherited_sockets: Vec<RawFd> = match unsafe { sd_notify::listen_fds_and_unset_env() } {
+        Ok(fds) => fds.collect(),
+        Err(e) => {
+            eprintln!("sockrelay-client: invalid socket activation environment: {e}");
+            return std::process::ExitCode::FAILURE;
+        }
+    };
+
     let config = Config::parse();
 
     // Resolved before forking, same as clap's own argument errors: a missing `$HOME` with no
-    // explicit `--socket` is a static configuration problem, not a runtime bind failure, so it's
-    // handled the same way — fail fast in the foreground, before any daemonizing happens.
-    let socket_path = match config.socket_path() {
-        Ok(path) => path,
+    // explicit `--socket`, or a flag that can't apply to an inherited socket, is a static
+    // configuration problem, not a runtime bind failure, so it's handled the same way — fail fast
+    // in the foreground, before any daemonizing happens.
+    let listen_on = match config.listen_on(&inherited_sockets) {
+        Ok(listen_on) => listen_on,
         Err(e) => {
             eprintln!("sockrelay-client: {e}");
             return std::process::ExitCode::FAILURE;
@@ -157,8 +178,8 @@ fn main() -> std::process::ExitCode {
         )
         .init();
 
-    if config.foreground {
-        run(config, socket_path, log_filter, log_sink, Mode::Foreground);
+    if config.foreground || matches!(listen_on, ListenOn::Inherited(_)) {
+        run(config, listen_on, log_filter, log_sink, Mode::Foreground);
     }
 
     let mut fds = [0i32; 2];
@@ -189,7 +210,7 @@ fn main() -> std::process::ExitCode {
             }
             run(
                 config,
-                socket_path,
+                listen_on,
                 log_filter,
                 log_sink,
                 Mode::Daemon { write_fd },
@@ -254,7 +275,7 @@ fn detach_stdio() {
 /// watcher below) or reports a startup failure and exits immediately.
 fn run(
     config: Config,
-    socket_path: PathBuf,
+    listen_on: ListenOn,
     log_filter: String,
     log_sink: LogSink,
     mode: Mode,
@@ -269,13 +290,25 @@ fn run(
         // running" (see `unix_listener::bind_reclaiming_stale`) — and only then start the Windows
         // server. An already-running instance isn't a failure from this process's point of view:
         // there's nothing more for it to do, so it reports success and exits.
-        let listener = match unix_listener::bind(&socket_path, config.socket_mode).await {
-            Ok(listener) => listener,
-            Err(ListenError::AlreadyInUse { .. }) => mode.already_running(),
-            Err(e) => {
-                tracing::error!(error = %e, "failed to bind the unix socket");
-                mode.fail(1);
-            }
+        let listener = match listen_on {
+            ListenOn::Path {
+                path,
+                mode: socket_mode,
+            } => match unix_listener::bind(&path, socket_mode).await {
+                Ok(listener) => listener,
+                Err(ListenError::AlreadyInUse { .. }) => mode.already_running(),
+                Err(e) => {
+                    tracing::error!(error = %e, "failed to bind the unix socket");
+                    mode.fail(1);
+                }
+            },
+            ListenOn::Inherited(fd) => match unix_listener::from_inherited(fd) {
+                Ok(listener) => listener,
+                Err(e) => {
+                    tracing::error!(error = %e, "failed to use the socket systemd passed");
+                    mode.fail(1);
+                }
+            },
         };
 
         // Spawned exactly once, here, before accepting any connections. Deliberately simple: if
@@ -291,10 +324,11 @@ fn run(
             };
 
         // Forwards the spawned server's own stderr into our own log sink, each line marked as the
-        // server's (see `log_sink::forward_server_lines`). This has to be wired up before the
-        // grace-period check below, not after: the server's own "pipe does not exist" diagnostic
-        // (see its `pipe::exists` check) is exactly the kind of message that arrives *during*
-        // that window, and nothing reads a piped stderr unless something explicitly does.
+        // server's (see `log_sink::forward_server_lines`). This has to be wired up before the grace-period check below,
+        // not after: the server's own "pipe does not exist" diagnostic (see its `pipe::exists`
+        // check) is exactly the kind of message that arrives *during* that window, and unlike
+        // before `.stderr(Stdio::piped())` was introduced (when this was simply inherited from
+        // this process), nothing reads a piped stderr unless something explicitly does.
         tokio::spawn(log_sink::forward_server_lines(
             server_stderr,
             log_sink.clone(),
@@ -329,12 +363,9 @@ fn run(
         });
 
         let accept_error_backoff = Duration::from_millis(config.accept_error_backoff_ms);
-        unix_listener::accept_loop(
-            &socket_path,
-            listener,
-            accept_error_backoff,
-            move |unix_stream| handle_connection(unix_stream, handle.clone()),
-        )
+        unix_listener::accept_loop(listener, accept_error_backoff, move |unix_stream| {
+            handle_connection(unix_stream, handle.clone())
+        })
         .await;
     });
 

@@ -1,13 +1,16 @@
 #!/bin/sh
-# Builds both sockrelay binaries and installs them into /usr/local/bin. Does not touch
-# ~/.profile (or any other shell config) or any already-running agent bridge — it just prints
-# what to add, and leaves wiring it up to you. Safe to re-run any time to rebuild and reinstall.
+# Builds both sockrelay binaries and installs them into /usr/local/bin, and the systemd user units
+# into the user unit directory. Restarts a running sockrelay.service, enables and starts nothing,
+# and doesn't touch ~/.profile (or any other shell config) or any other agent bridge — it prints
+# the steps that are left. Safe to re-run any time to rebuild and reinstall.
 set -eu
 
 REPO_DIR="$(cd "$(dirname "$0")" && pwd)"
 SOCKET_PATH="$HOME/.ssh/agent.sock"
-CLIENT_BIN="/usr/local/bin/sockrelay-client"
-SERVER_BIN="/usr/local/bin/sockrelay-server.exe"
+BIN_DIR="/usr/local/bin"
+CLIENT_BIN="$BIN_DIR/sockrelay-client"
+SERVER_BIN="$BIN_DIR/sockrelay-server.exe"
+UNIT_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user"
 
 # The Windows target must match the *host's* real CPU architecture, not just default to aarch64:
 # WSL's binfmt interop runs the cross-compiled .exe natively (no Wine/emulation) only because it's
@@ -35,22 +38,43 @@ echo "==> Installing binaries into /usr/local/bin (sudo)"
 sudo install -m 755 "$REPO_DIR/target/release/sockrelay-client" "$CLIENT_BIN"
 sudo install -m 755 "$REPO_DIR/target/$WIN_TARGET/release/sockrelay-server.exe" "$SERVER_BIN"
 
+echo "==> Installing the systemd user units into $UNIT_DIR"
+mkdir -p "$UNIT_DIR"
+cp "$REPO_DIR/contrib/sockrelay.socket" "$UNIT_DIR/sockrelay.socket"
+sed "s|@BINDIR@|$BIN_DIR|g" "$REPO_DIR/contrib/sockrelay.service" > "$UNIT_DIR/sockrelay.service"
+if systemctl --user show-environment >/dev/null 2>&1; then
+    systemctl --user daemon-reload
+    # A running instance keeps the binary it started with until it restarts; a stopped one stays stopped.
+    systemctl --user try-restart sockrelay.service
+fi
+
 cat <<EOF
 
 ==> Installed:
     $CLIENT_BIN
     $SERVER_BIN
+    $UNIT_DIR/sockrelay.socket
+    $UNIT_DIR/sockrelay.service
 
 To use sockrelay instead of whatever currently provides your ssh-agent socket:
 
-1. Stop whatever is currently listening on $SOCKET_PATH, if anything (e.g. an old
-   socat+npiperelay bridge). Check with:
-       ps aux | grep -i "socat\|npiperelay"
+1. Stop whatever is currently listening on $SOCKET_PATH, if anything (an old socat+npiperelay
+   bridge, or sockrelay-client started from a shell profile). Check with:
+       ps aux | grep -i "socat\|npiperelay\|sockrelay"
 
 2. In whatever starts your ssh-agent bridge today (~/.profile, ~/.bashrc, etc.), comment out
    that old invocation.
 
-3. Add this in its place:
+3. With systemd running in WSL (systemd=true under [boot] in /etc/wsl.conf), let it own the
+   socket and start the relay on the first connection:
+
+       systemctl --user enable --now sockrelay.socket
+
+   and only point SSH at the socket from the shell profile:
+
+       export SSH_AUTH_SOCK="$SOCKET_PATH"
+
+   Without systemd, start the relay from the shell profile instead:
 
        $CLIENT_BIN && export SSH_AUTH_SOCK="$SOCKET_PATH"
 

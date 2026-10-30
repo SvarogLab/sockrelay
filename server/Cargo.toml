@@ -22,3 +22,6 @@ futures = { workspace = true }
 windows-sys = { workspace = true }
 rand = { workspace = true }
 clap = { workspace = true }
+
+[lints]
+workspace = true
