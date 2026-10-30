@@ -66,11 +66,8 @@ impl SpawnedServer {
         Ok(tokio::io::join(stdout, stdin))
     }
 
-    /// Takes ownership of the child's stderr — the server writes its own timestamped diagnostics
-    /// there exactly as if run directly (see `server/src/main.rs`); it has no concept of a log
-    /// file or of this process's `--log-file` at all. The caller (see `main.rs`'s server-log
-    /// forwarding task) is responsible for reading it and deciding where those bytes end up. Can
-    /// only be called once per spawned child.
+    /// Takes ownership of the child's stderr, where the server writes its diagnostics (see
+    /// `server_log::forward`). Can only be called once per spawned child.
     pub fn take_stderr(&mut self) -> Result<ChildStderr, SpawnError> {
         self.child.stderr.take().ok_or(SpawnError::MissingStdio)
     }

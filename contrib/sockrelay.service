@@ -5,7 +5,7 @@ Description=Relay from the Windows OpenSSH agent pipe to a unix socket
 Type=notify
 # Takes the socket from sockrelay.socket when that is enabled, binds ~/.ssh/agent.sock itself
 # otherwise.
-ExecStart=@BINDIR@/sockrelay-client --foreground
+ExecStart=@BINDIR@/sockrelay-client
 Restart=on-failure
 # Without a pause, an agent that isn't running uses up the start limit within a second.
 RestartSec=2

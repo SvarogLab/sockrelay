@@ -56,33 +56,21 @@ cat <<EOF
     $UNIT_DIR/sockrelay.socket
     $UNIT_DIR/sockrelay.service
 
-To use sockrelay instead of whatever currently provides your ssh-agent socket:
+sockrelay runs under systemd, which needs systemd running in WSL (systemd=true under [boot] in
+/etc/wsl.conf). To use it instead of whatever currently provides your ssh-agent socket:
 
-1. Stop whatever is currently listening on $SOCKET_PATH, if anything (an old socat+npiperelay
-   bridge, or sockrelay-client started from a shell profile). Check with:
+1. Stop whatever is currently listening on $SOCKET_PATH, if anything (e.g. an old
+   socat+npiperelay bridge). Check with:
        ps aux | grep -i "socat\|npiperelay\|sockrelay"
 
-2. In whatever starts your ssh-agent bridge today (~/.profile, ~/.bashrc, etc.), comment out
-   that old invocation.
-
-3. With systemd running in WSL (systemd=true under [boot] in /etc/wsl.conf), let it own the
-   socket and start the relay on the first connection:
-
-       systemctl --user enable --now sockrelay.socket
-
-   and only point SSH at the socket from the shell profile:
+2. In whatever starts that bridge today (~/.profile, ~/.bashrc, etc.), remove that invocation and
+   only point SSH at the socket:
 
        export SSH_AUTH_SOCK="$SOCKET_PATH"
 
-   Without systemd, start the relay from the shell profile instead:
+3. Let systemd own the socket and start the relay on the first connection:
 
-       $CLIENT_BIN && export SSH_AUTH_SOCK="$SOCKET_PATH"
-
-   $CLIENT_BIN needs no flags in the common case (every setting defaults sensibly — see the
-   README's Configuration section). It daemonizes itself, prints its own diagnostics to stderr
-   on a genuine failure (nothing at all if an instance was already running — only a fresh start
-   prints anything), and returns a real exit code — so \$SSH_AUTH_SOCK only gets set once it's
-   confirmed there's actually something listening behind it.
+       systemctl --user enable --now sockrelay.socket
 
 4. Open a new login shell (or re-source whichever file you edited) to pick it up.
 EOF

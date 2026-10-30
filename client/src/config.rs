@@ -33,9 +33,8 @@ pub enum ListenOn {
     Inherited(RawFd),
 }
 
-/// Unlike `sockrelay-server`, every value here has a sensible default — this process is the one a
-/// human actually invokes directly (typically from a shell profile), so it should work with no
-/// flags at all in the common case. The pipe-path/timeout/jitter flags below have no effect on
+/// Unlike `sockrelay-server`, every value here has a sensible default, so the systemd unit runs
+/// this process with no flags at all. The pipe-path/timeout/jitter flags below have no effect on
 /// this process itself — they're read here only to be forwarded as argv to the spawned
 /// `sockrelay-server.exe` (see `server_args`), since env vars set on this process do **not** cross
 /// the WSL binfmt-interop boundary into the spawned Windows process (confirmed empirically); their
@@ -68,20 +67,6 @@ pub struct Config {
     /// `unix_listener::accept_loop`.
     #[arg(long, default_value_t = 100)]
     pub accept_error_backoff_ms: u64,
-
-    /// Runs in the foreground instead of daemonizing (no fork, no detaching from the controlling
-    /// terminal) — for a process supervisor (systemd, a container entrypoint) that already
-    /// expects to own this process directly, or for interactive debugging. Implied under socket
-    /// activation.
-    #[arg(long, default_value_t = false)]
-    pub foreground: bool,
-
-    /// Where to write timestamped diagnostics (this process's own, and the spawned Windows
-    /// server's, forwarded from its stderr — see `log_sink::LogSink`). Unset by default: no file
-    /// is opened and nothing is written to one — this and "does the invoking terminal see it" are
-    /// two fully independent questions, see `LogSink`'s own doc comment.
-    #[arg(long)]
-    pub log_file: Option<PathBuf>,
 
     /// Named pipe path for the local ssh-agent — forwarded to the spawned Windows server as
     /// `--pipe-path` (see `server_args`); has no effect on this process itself.
@@ -226,6 +211,17 @@ mod tests {
             config.listen_on(&[3]),
             Err(ConfigError::SocketFlagsWithInheritedSocket)
         ));
+    }
+
+    #[test]
+    fn has_no_daemon_mode_to_opt_out_of() {
+        assert!(Config::try_parse_from(["sockrelay-client", "--foreground"]).is_err());
+    }
+
+    #[test]
+    fn has_no_log_file() {
+        let args = ["sockrelay-client", "--log-file", "/tmp/client.log"];
+        assert!(Config::try_parse_from(args).is_err());
     }
 
     #[test]
