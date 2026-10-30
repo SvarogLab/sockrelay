@@ -25,9 +25,8 @@ pub struct Config {
     pub log: librelay::server::log::LogArgs,
 }
 
-#[cfg(windows)]
 impl Config {
-    pub fn pipe_settings(&self) -> crate::pipe::PipeSettings {
+    pub const fn pipe_settings(&self) -> crate::pipe::PipeSettings {
         crate::pipe::PipeSettings {
             connect_timeout: std::time::Duration::from_secs(self.connect_timeout_secs),
             jitter_max_ms: self.jitter_max_ms,

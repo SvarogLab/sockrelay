@@ -1,21 +1,27 @@
 mod config;
+mod socket;
 
 use std::io;
+use std::ops::ControlFlow;
 use std::os::fd::RawFd;
-use std::pin::pin;
+use std::pin::{Pin, pin};
 use std::process::ExitCode;
 use std::time::Duration;
 
 use clap::Parser;
-use librelay::client::log::{self, LogFilter};
+use librelay::client::log::{self, LogFilter, LogFilterError};
 use librelay::client::mux::MuxHandle;
-use librelay::client::{lifecycle, relay, systemd};
+use librelay::client::relay::{self, Link};
+use librelay::client::{lifecycle, systemd};
 use tokio::net::{UnixListener, UnixStream};
+use tokio::runtime::Runtime;
+use tokio::task::JoinHandle;
 use tokio_util::compat::FuturesAsyncReadCompatExt;
 use tokio_util::sync::CancellationToken;
 use tokio_util::task::TaskTracker;
 
 use config::Config;
+use socket::SocketError;
 
 /// How long the server gets to prove it stays up before systemd hears the service is ready. The
 /// failure this catches — `sockrelay-server` exiting at once because `--pipe-path` names no running
@@ -26,46 +32,61 @@ const STARTUP_GRACE_PERIOD: Duration = Duration::from_millis(500);
 /// for the server to exit.
 const SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(5);
 
-/// The socket-activation environment is read before the tokio runtime starts: unsetting it is only
-/// sound while this process has a single thread.
+#[derive(Debug, thiserror::Error)]
+enum StartupError {
+    #[error("invalid socket activation environment: {0}")]
+    ListenFds(#[source] io::Error),
+    #[error(transparent)]
+    Socket(#[from] SocketError),
+    #[error(transparent)]
+    LogFilter(#[from] LogFilterError),
+    #[error("failed to build the tokio runtime: {0}")]
+    Runtime(#[source] io::Error),
+}
+
+/// What the relay starts with, all of it settled before the runtime exists.
+struct Startup {
+    runtime: Runtime,
+    config: Config,
+    socket: RawFd,
+    server_args: Vec<String>,
+}
+
 fn main() -> ExitCode {
+    match start_up() {
+        Ok(Startup {
+            runtime,
+            config,
+            socket,
+            server_args,
+        }) => runtime.block_on(run(config, socket, server_args)),
+        Err(e) => {
+            eprintln!("sockrelay-client: {e}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
+/// The socket-activation environment is read first: unsetting it is only sound while the process
+/// has a single thread, before the runtime starts any.
+fn start_up() -> Result<Startup, StartupError> {
     // SAFETY: still single-threaded — no runtime, no other thread exists yet.
-    let inherited: Vec<RawFd> = match unsafe { systemd::take_listen_fds() } {
-        Ok(fds) => fds,
-        Err(e) => {
-            eprintln!("sockrelay-client: invalid socket activation environment: {e}");
-            return ExitCode::FAILURE;
-        }
-    };
+    let inherited = unsafe { systemd::take_listen_fds() }.map_err(StartupError::ListenFds)?;
     let config = Config::parse();
-    let socket = match config::listening_socket(&inherited) {
-        Ok(fd) => fd,
-        Err(e) => {
-            eprintln!("sockrelay-client: {e}");
-            return ExitCode::FAILURE;
-        }
-    };
-    let log_filter = match LogFilter::from_env() {
-        Ok(filter) => filter,
-        Err(e) => {
-            eprintln!("sockrelay-client: {e}");
-            return ExitCode::FAILURE;
-        }
-    };
+    let socket = socket::listening_socket(&inherited)?;
+    let log_filter = LogFilter::from_env()?;
     let server_args = config.server_args(&log_filter);
     log::init(log_filter);
-
-    let runtime = match tokio::runtime::Builder::new_multi_thread()
+    let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()
-    {
-        Ok(runtime) => runtime,
-        Err(e) => {
-            tracing::error!(error = %e, "failed to build the tokio runtime");
-            return ExitCode::FAILURE;
-        }
-    };
-    runtime.block_on(run(config, socket, server_args))
+        .map_err(StartupError::Runtime)?;
+    Ok(Startup {
+        runtime,
+        config,
+        socket,
+        server_args,
+    })
 }
 
 async fn run(config: Config, socket: RawFd, server_args: Vec<String>) -> ExitCode {
@@ -80,68 +101,88 @@ async fn run(config: Config, socket: RawFd, server_args: Vec<String>) -> ExitCod
     // Watched from before the server is spawned: until then a stop signal would kill the client
     // outright and leave the server to `KillMode=mixed`.
     let mut shutdown = pin!(lifecycle::shutdown_signal());
+    let (handle, mut link) =
+        match start_link(config.server_exe, server_args, shutdown.as_mut()).await {
+            ControlFlow::Continue(started) => started,
+            ControlFlow::Break(code) => return code,
+        };
+
+    let mut connections = Connections::accept(
+        listener,
+        Duration::from_millis(config.accept_error_backoff_ms),
+        handle.clone(),
+    );
+    if let ControlFlow::Break(code) =
+        serve_until_stopped(&mut link, &mut connections.accepting, shutdown).await
+    {
+        return code;
+    }
+
+    tracing::info!("stopping");
+    connections.stop().await;
+    close_link(link, handle).await
+}
+
+type ShutdownSignal<'a> = Pin<&'a mut (dyn Future<Output = io::Result<()>> + Send)>;
+
+async fn start_link(
+    server_exe: std::path::PathBuf,
+    server_args: Vec<String>,
+    shutdown: ShutdownSignal<'_>,
+) -> ControlFlow<ExitCode, (MuxHandle, Link)> {
     let started = tokio::select! {
-        started = relay::start(config.server_exe, server_args, Some(STARTUP_GRACE_PERIOD)) => started,
-        signal = &mut shutdown => return stopped(signal, "stopped while starting"),
+        started = relay::start(server_exe, server_args, Some(STARTUP_GRACE_PERIOD)) => started,
+        signal = shutdown => return ControlFlow::Break(stopped(signal, "stopped while starting")),
     };
-    let (handle, mut link) = match started {
-        Ok(started) => started,
+    match started {
+        Ok(started) => {
+            tracing::info!("started");
+            if let Err(e) = systemd::notify_ready() {
+                tracing::warn!(error = %e, "failed to notify systemd of readiness");
+            }
+            ControlFlow::Continue(started)
+        }
         Err(e) => {
             tracing::error!(
                 error = %e,
                 "failed to start the windows server — check --pipe-path and that the real agent \
                  is running"
             );
-            return ExitCode::FAILURE;
+            ControlFlow::Break(ExitCode::FAILURE)
         }
-    };
-    tracing::info!("started");
-    if let Err(e) = systemd::notify_ready() {
-        tracing::warn!(error = %e, "failed to notify systemd of readiness");
     }
+}
 
-    let connections = TaskTracker::new();
-    let stop_connections = CancellationToken::new();
-    let mut accepting = tokio::spawn(accept_connections(
-        listener,
-        Duration::from_millis(config.accept_error_backoff_ms),
-        handle.clone(),
-        connections.clone(),
-        stop_connections.clone(),
-    ));
-
+/// Relays until a stop signal, which continues to a graceful stop, or until the link or the socket
+/// fails, which ends the relay for systemd to restart.
+async fn serve_until_stopped(
+    link: &mut Link,
+    accepting: &mut JoinHandle<io::Error>,
+    shutdown: ShutdownSignal<'_>,
+) -> ControlFlow<ExitCode> {
     tokio::select! {
         died = link.died() => {
             tracing::error!(reason = %died, "lost the windows server, exiting");
-            return ExitCode::FAILURE;
+            ControlFlow::Break(ExitCode::FAILURE)
         }
-        failed = &mut accepting => {
+        failed = accepting => {
             match failed {
                 Ok(e) => tracing::error!(error = %e, "can't accept connections, exiting"),
                 Err(e) => tracing::error!(error = %e, "accepting connections stopped, exiting"),
             }
-            return ExitCode::FAILURE;
+            ControlFlow::Break(ExitCode::FAILURE)
         }
-        signal = &mut shutdown => {
-            if let Err(e) = signal {
+        signal = shutdown => match signal {
+            Ok(()) => ControlFlow::Continue(()),
+            Err(e) => {
                 tracing::error!(error = %e, "can't watch for a stop signal, exiting");
-                return ExitCode::FAILURE;
+                ControlFlow::Break(ExitCode::FAILURE)
             }
-        }
+        },
     }
+}
 
-    tracing::info!("stopping");
-    accepting.abort();
-    connections.close();
-    if tokio::time::timeout(SHUTDOWN_TIMEOUT, connections.wait())
-        .await
-        .is_err()
-    {
-        tracing::warn!("connections still open after {SHUTDOWN_TIMEOUT:?}, closing them");
-        // Each holds a handle, and the link only closes once the last one is gone.
-        stop_connections.cancel();
-        connections.wait().await;
-    }
+async fn close_link(link: Link, handle: MuxHandle) -> ExitCode {
     match link.close(handle, SHUTDOWN_TIMEOUT).await {
         Ok(status) => {
             tracing::info!(%status, "stopped");
@@ -163,6 +204,48 @@ fn stopped(signal: io::Result<()>, message: &str) -> ExitCode {
         Err(e) => {
             tracing::error!(error = %e, "can't watch for a stop signal, exiting");
             ExitCode::FAILURE
+        }
+    }
+}
+
+/// The accepted connections, each relayed on a task of its own, and the accept loop that feeds
+/// them.
+struct Connections {
+    accepting: JoinHandle<io::Error>,
+    relaying: TaskTracker,
+    cancel: CancellationToken,
+}
+
+impl Connections {
+    fn accept(listener: UnixListener, error_backoff: Duration, handle: MuxHandle) -> Self {
+        let relaying = TaskTracker::new();
+        let cancel = CancellationToken::new();
+        let accepting = tokio::spawn(accept_connections(
+            listener,
+            error_backoff,
+            handle,
+            relaying.clone(),
+            cancel.clone(),
+        ));
+        Self {
+            accepting,
+            relaying,
+            cancel,
+        }
+    }
+
+    /// Stops accepting and gives connections in flight [`SHUTDOWN_TIMEOUT`] before cancelling
+    /// them: each holds a handle, and the link only closes once the last one is gone.
+    async fn stop(self) {
+        self.accepting.abort();
+        self.relaying.close();
+        if tokio::time::timeout(SHUTDOWN_TIMEOUT, self.relaying.wait())
+            .await
+            .is_err()
+        {
+            tracing::warn!("connections still open after {SHUTDOWN_TIMEOUT:?}, closing them");
+            self.cancel.cancel();
+            self.relaying.wait().await;
         }
     }
 }
@@ -235,9 +318,9 @@ mod tests {
         let (handle, driver) = mux::client(near);
         tokio::spawn(driver);
         // yamux holds back a new stream once this many are waiting for the server's ACK.
-        let mut unacknowledged = Vec::new();
+        let mut _unacknowledged = Vec::new();
         for _ in 0..256 {
-            unacknowledged.push(handle.open_stream().await.unwrap());
+            _unacknowledged.push(handle.open_stream().await.unwrap());
         }
         let stop = CancellationToken::new();
         stop.cancel();

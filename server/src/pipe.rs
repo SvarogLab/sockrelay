@@ -6,7 +6,7 @@ use std::io;
 use std::time::Duration;
 
 use tokio::net::windows::named_pipe::{ClientOptions, NamedPipeClient};
-use windows_sys::Win32::Foundation::{ERROR_FILE_NOT_FOUND, ERROR_PIPE_BUSY};
+use windows_sys::Win32::Foundation::{ERROR_FILE_NOT_FOUND, ERROR_PIPE_BUSY, WIN32_ERROR};
 use windows_sys::Win32::System::Pipes::{NMPWAIT_NOWAIT, NMPWAIT_USE_DEFAULT_WAIT, WaitNamedPipeW};
 
 /// How `connect` waits for a saturated agent; the right values depend on the agent's capacity.
@@ -16,15 +16,6 @@ pub struct PipeSettings {
     pub connect_timeout: Duration,
     /// Upper bound of the random pause between busy retries, in milliseconds.
     pub jitter_max_ms: u64,
-}
-
-impl Default for PipeSettings {
-    fn default() -> Self {
-        Self {
-            connect_timeout: Duration::from_secs(5),
-            jitter_max_ms: 50,
-        }
-    }
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -40,7 +31,7 @@ pub enum PipeError {
 /// Blocks until `path` has a free instance, or the wait times out. `NMPWAIT_USE_DEFAULT_WAIT` takes
 /// the timeout the agent set when it created the pipe instead of inventing one.
 fn wait_for_free_instance(path: &str) -> io::Result<()> {
-    let wide_path: Vec<u16> = path.encode_utf16().chain(std::iter::once(0)).collect();
+    let wide_path = wide(path);
     // SAFETY: `wide_path` is a valid null-terminated UTF-16 string live for the duration of this
     // call; `WaitNamedPipeW` reads it but does not retain the pointer past returning.
     let succeeded = unsafe { WaitNamedPipeW(wide_path.as_ptr(), NMPWAIT_USE_DEFAULT_WAIT) };
@@ -55,13 +46,22 @@ fn wait_for_free_instance(path: &str) -> io::Result<()> {
 /// pipe whose every instance is busy still fails, but with `ERROR_SEM_TIMEOUT`; only a name nothing
 /// listens on fails with `ERROR_FILE_NOT_FOUND`.
 pub fn exists(path: &str) -> bool {
-    let wide_path: Vec<u16> = path.encode_utf16().chain(std::iter::once(0)).collect();
+    let wide_path = wide(path);
     // SAFETY: as in `wait_for_free_instance`.
     let succeeded = unsafe { WaitNamedPipeW(wide_path.as_ptr(), NMPWAIT_NOWAIT) };
     if succeeded != 0 {
         return true;
     }
-    io::Error::last_os_error().raw_os_error() != Some(ERROR_FILE_NOT_FOUND as i32)
+    !is_os_error(&io::Error::last_os_error(), ERROR_FILE_NOT_FOUND)
+}
+
+/// `path` as the null-terminated UTF-16 string the Win32 pipe calls take.
+fn wide(path: &str) -> Vec<u16> {
+    path.encode_utf16().chain(std::iter::once(0)).collect()
+}
+
+fn is_os_error(error: &io::Error, code: WIN32_ERROR) -> bool {
+    error.raw_os_error() == Some(code.cast_signed())
 }
 
 /// Opens a fresh client handle on `path`, retrying while the agent answers `ERROR_PIPE_BUSY`: wait
@@ -71,40 +71,39 @@ pub fn exists(path: &str) -> bool {
 /// instance and only one of them gets it, so the rest must keep trying, and the jitter keeps them
 /// from piling up on the next freed instance in the same instant.
 pub async fn connect(path: &str, settings: PipeSettings) -> Result<NamedPipeClient, PipeError> {
-    let attempt = async {
-        loop {
-            match ClientOptions::new().open(path) {
-                Ok(pipe) => return Ok(pipe),
-                Err(source) if source.raw_os_error() == Some(ERROR_PIPE_BUSY as i32) => {
-                    let wait_path = path.to_string();
-                    // Whether the wait saw a free instance or timed out, the open decides.
-                    let _ = tokio::task::spawn_blocking(move || wait_for_free_instance(&wait_path))
-                        .await
-                        .expect("wait_for_free_instance blocking task panicked");
-
-                    let jitter_ms = rand::random_range(0..=settings.jitter_max_ms);
-                    tokio::time::sleep(Duration::from_millis(jitter_ms)).await;
-                }
-                Err(source) => return Err(source),
-            }
-        }
-    };
-
-    match tokio::time::timeout(settings.connect_timeout, attempt).await {
-        Ok(result) => result.map_err(|source| PipeError::Connect {
-            path: path.to_string(),
-            source,
-        }),
-        Err(_elapsed) => Err(PipeError::Connect {
-            path: path.to_string(),
-            source: io::Error::new(
-                io::ErrorKind::TimedOut,
-                format!(
-                    "pipe stayed busy for the whole {:?} connect timeout",
-                    settings.connect_timeout
-                ),
+    tokio::time::timeout(
+        settings.connect_timeout,
+        open_when_free(path, settings.jitter_max_ms),
+    )
+    .await
+    .unwrap_or_else(|_elapsed| {
+        Err(io::Error::new(
+            io::ErrorKind::TimedOut,
+            format!(
+                "pipe stayed busy for the whole {:?} connect timeout",
+                settings.connect_timeout
             ),
-        }),
+        ))
+    })
+    .map_err(|source| PipeError::Connect {
+        path: path.to_string(),
+        source,
+    })
+}
+
+async fn open_when_free(path: &str, jitter_max_ms: u64) -> io::Result<NamedPipeClient> {
+    loop {
+        match ClientOptions::new().open(path) {
+            Err(e) if is_os_error(&e, ERROR_PIPE_BUSY) => {
+                let wait_path = path.to_string();
+                // Whether the wait saw a free instance, timed out or failed, the next open decides.
+                let _ =
+                    tokio::task::spawn_blocking(move || wait_for_free_instance(&wait_path)).await;
+                let jitter = Duration::from_millis(rand::random_range(0..=jitter_max_ms));
+                tokio::time::sleep(jitter).await;
+            }
+            opened => return opened,
+        }
     }
 }
 
@@ -155,6 +154,11 @@ mod tests {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use tokio::net::windows::named_pipe::ServerOptions;
 
+    const SETTINGS: PipeSettings = PipeSettings {
+        connect_timeout: Duration::from_secs(5),
+        jitter_max_ms: 50,
+    };
+
     fn unique_pipe_path(name: &str) -> String {
         format!(r"\\.\pipe\sockrelay-test-{}-{}", name, std::process::id())
     }
@@ -171,10 +175,10 @@ mod tests {
             let mut buf = [0u8; 5];
             agent.read_exact(&mut buf).await.unwrap();
             agent.write_all(b"reply").await.unwrap();
-            std::future::pending::<()>().await
+            std::future::pending::<()>().await;
         });
 
-        let pipe = connect(&path, PipeSettings::default()).await.unwrap();
+        let pipe = connect(&path, SETTINGS).await.unwrap();
         let (mut client_side, server_side) = tokio::io::duplex(64);
 
         let relay_task = tokio::spawn(relay(server_side, pipe));
@@ -205,7 +209,7 @@ mod tests {
             server.write_all(&buf).await.unwrap();
         });
 
-        let mut client = connect(&path, PipeSettings::default()).await.unwrap();
+        let mut client = connect(&path, SETTINGS).await.unwrap();
         client.write_all(b"hello").await.unwrap();
         let mut buf = [0u8; 5];
         client.read_exact(&mut buf).await.unwrap();
@@ -217,7 +221,7 @@ mod tests {
     #[tokio::test]
     async fn connect_fails_for_a_nonexistent_pipe() {
         let path = unique_pipe_path("does-not-exist");
-        match connect(&path, PipeSettings::default()).await {
+        match connect(&path, SETTINGS).await {
             Err(PipeError::Connect { .. }) => {}
             Ok(_) => panic!("expected connecting to a nonexistent pipe to fail"),
         }
@@ -254,12 +258,11 @@ mod tests {
         let client_a = ClientOptions::new().open(&path).unwrap();
 
         match ClientOptions::new().open(&path) {
-            Err(e) if e.raw_os_error() == Some(ERROR_PIPE_BUSY as i32) => {}
+            Err(e) if is_os_error(&e, ERROR_PIPE_BUSY) => {}
             other => panic!("expected the sole instance to be busy, got {other:?}"),
         }
 
-        let connect_task =
-            tokio::spawn(async move { connect(&path, PipeSettings::default()).await });
+        let connect_task = tokio::spawn(async move { connect(&path, SETTINGS).await });
 
         // Lets the task hit the busy pipe and start waiting before the instance is freed.
         tokio::time::sleep(std::time::Duration::from_millis(20)).await;
