@@ -247,3 +247,8 @@ valid Windows-target build.
   (systemd, a process manager) is expected to restart it, the same as any other crashed daemon.
 - A busy/saturated agent produces an honest, bounded failure (`--connect-timeout-secs`) rather
   than an unbounded hang or a silently retried request.
+
+## License
+
+Licensed under either of [Apache License, Version 2.0](LICENSE-APACHE) or [MIT license](LICENSE-MIT)
+at your option.

@@ -22,3 +22,7 @@ libc = "0.2.189"
 clap = { version = "4.6.4", features = ["derive"] }
 windows-sys = { version = "0.61.2", features = ["Win32_System_Pipes", "Win32_Foundation"] }
 rand = "0.10.2"
+
+[workspace.lints.clippy]
+# A module with submodules lives in `name.rs` beside `name/`, not in `name/mod.rs`.
+mod_module_files = "warn"
