@@ -1,8 +1,9 @@
 #!/bin/sh
 # Builds both sockrelay binaries and installs them into /usr/local/bin, and the systemd user units
-# into the user unit directory. Restarts a running sockrelay.service, enables and starts nothing,
-# and doesn't touch ~/.profile (or any other shell config) or any other agent bridge — it prints
-# the steps that are left. Safe to re-run any time to rebuild and reinstall.
+# into the user unit directory. Stops any running server first and starts sockrelay.service again
+# if it was running; enables nothing, and doesn't touch ~/.profile (or any other shell config) or
+# any other agent bridge — it prints the steps that are left. Safe to re-run to rebuild and
+# reinstall.
 set -eu
 
 REPO_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -34,7 +35,19 @@ echo "==> Building sockrelay-client (release)"
 echo "==> Building sockrelay-server (release, $WIN_TARGET)"
 (cd "$REPO_DIR" && cargo xwin build --release -p sockrelay-server --target "$WIN_TARGET")
 
-echo "==> Installing binaries into /usr/local/bin (sudo)"
+# Windows keeps running the image of an .exe it already has open, even once the file under it is
+# replaced, so every server still running, the service's or one left over, ends before the new
+# one goes in; a client started afterwards would otherwise get an old server back. The socket
+# stays with systemd meanwhile, so a connection made during the install waits instead of failing.
+if systemctl --user show-environment >/dev/null 2>&1; then
+    WAS_ACTIVE="$(systemctl --user is-active sockrelay.service || true)"
+    systemctl --user stop sockrelay.service
+else
+    WAS_ACTIVE=inactive
+fi
+pkill -f "^/init $SERVER_BIN" || true
+
+echo "==> Installing binaries into $BIN_DIR (sudo)"
 sudo install -m 755 "$REPO_DIR/target/release/sockrelay-client" "$CLIENT_BIN"
 sudo install -m 755 "$REPO_DIR/target/$WIN_TARGET/release/sockrelay-server.exe" "$SERVER_BIN"
 
@@ -44,8 +57,9 @@ cp "$REPO_DIR/contrib/sockrelay.socket" "$UNIT_DIR/sockrelay.socket"
 sed "s|@BINDIR@|$BIN_DIR|g" "$REPO_DIR/contrib/sockrelay.service" > "$UNIT_DIR/sockrelay.service"
 if systemctl --user show-environment >/dev/null 2>&1; then
     systemctl --user daemon-reload
-    # A running instance keeps the binary it started with until it restarts; a stopped one stays stopped.
-    systemctl --user try-restart sockrelay.service
+    if [ "$WAS_ACTIVE" = active ]; then
+        systemctl --user start sockrelay.service
+    fi
 fi
 
 cat <<EOF
