@@ -7,7 +7,7 @@ mod spawn;
 mod test_support;
 mod unix_listener;
 
-use std::io::Write;
+use std::io::{IsTerminal, Write};
 use std::os::fd::RawFd;
 use std::path::PathBuf;
 use std::time::Duration;
@@ -143,6 +143,7 @@ fn main() -> std::process::ExitCode {
     };
     tracing_subscriber::fmt()
         .with_writer(log_sink.clone())
+        .with_ansi(log_sink.wants_color(std::io::stderr().is_terminal()))
         .init();
 
     if config.foreground {

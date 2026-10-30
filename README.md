@@ -167,6 +167,9 @@ detaching at all, so output keeps reaching stderr (and `--log-file`, if given) f
 process runs — the natural behavior for something a supervisor or an interactive user is watching
 directly.
 
+Output is colored only when stderr is a terminal and no `--log-file` is given; the journal and a
+log file both get plain text.
+
 ```sh
 sockrelay-client --log-file ~/.cache/sockrelay/client.log
 ```
