@@ -1,6 +1,5 @@
 use std::future::Future;
 use std::io;
-use std::os::fd::{FromRawFd, OwnedFd, RawFd};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
@@ -30,19 +29,6 @@ pub enum ListenError {
 /// server — between claiming the socket and starting to accept connections on it.
 pub async fn bind(socket_path: impl AsRef<Path>, mode: u32) -> Result<UnixListener, ListenError> {
     bind_reclaiming_stale(socket_path.as_ref(), mode).await
-}
-
-/// Takes over a listening unix socket systemd has already bound and passed in as `fd` (socket
-/// activation). Fails if `fd` isn't a unix socket — a `.socket` unit with a TCP `ListenStream=`,
-/// say.
-pub fn from_inherited(fd: RawFd) -> io::Result<UnixListener> {
-    // SAFETY: systemd passes each listening fd to this process alone, and `main` collects them
-    // exactly once.
-    let listener = std::os::unix::net::UnixListener::from(unsafe { OwnedFd::from_raw_fd(fd) });
-    // Fails with InvalidInput unless the fd is AF_UNIX.
-    listener.local_addr()?;
-    listener.set_nonblocking(true)?;
-    UnixListener::from_std(listener)
 }
 
 /// Calls `handle` (on its own spawned task) for every connection accepted on `listener`, for as
@@ -247,37 +233,6 @@ mod tests {
             .expect("handler was not invoked")
             .unwrap();
         assert_eq!(received, b"hello");
-    }
-
-    #[tokio::test]
-    async fn from_inherited_accepts_on_an_already_bound_socket() {
-        use std::os::fd::IntoRawFd;
-
-        let _guard = UMASK_TEST_LOCK.lock().await;
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("agent.sock");
-        let fd = std::os::unix::net::UnixListener::bind(&path)
-            .unwrap()
-            .into_raw_fd();
-
-        let listener = from_inherited(fd).unwrap();
-        let accepted = tokio::spawn(async move { listener.accept().await.map(|_| ()) });
-        tokio::net::UnixStream::connect(&path).await.unwrap();
-        tokio::time::timeout(Duration::from_secs(5), accepted)
-            .await
-            .expect("connection was not accepted")
-            .unwrap()
-            .unwrap();
-    }
-
-    #[test]
-    fn from_inherited_refuses_a_tcp_socket() {
-        use std::os::fd::IntoRawFd;
-
-        let fd = std::net::TcpListener::bind("127.0.0.1:0")
-            .unwrap()
-            .into_raw_fd();
-        assert!(from_inherited(fd).is_err());
     }
 
     #[tokio::test]

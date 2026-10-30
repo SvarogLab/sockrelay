@@ -36,6 +36,11 @@ duplicated verbatim in both `client::mux` and `server::mux` (identical, 9 lines,
 sync by hand than to maintain a whole extra crate for), and the byte-relay helper moved into
 `client::relay`, its only remaining caller.
 
+What doesn't depend on the relayed protocol — spawning the server, watching it, logging and
+systemd integration — comes from [`librelay`](https://github.com/SvarogLab/librelay), shared with
+[`credrelay`](https://github.com/SvarogLab/credrelay), a relay of the same shape for the Windows
+Credential Manager.
+
 A separate load-testing tool used during this project's own development to measure behavior under
 concurrent load against the real agent lives in its own repository,
 [`sockrelay-loadtest`](https://github.com/ffaxl/tools-sockrelay-loadtest) — it isn't part of this

@@ -1,34 +1,22 @@
 mod config;
 mod mux;
 mod relay;
-mod server_log;
-mod spawn;
 #[cfg(test)]
 mod test_support;
 mod unix_listener;
 
-use std::io::IsTerminal;
 use std::os::fd::RawFd;
-use std::path::PathBuf;
 use std::process::ExitCode;
 use std::time::Duration;
 
 use clap::Parser;
-use futures::FutureExt;
+use librelay::client::log::{self, LogFilter};
+use librelay::client::spawn::Server;
+use librelay::client::{lifecycle, systemd};
 use tokio_util::compat::FuturesAsyncReadCompatExt;
 
 use config::{Config, ListenOn};
 use mux::MuxHandle;
-use spawn::{SpawnError, SpawnedServer};
-
-/// Resolves once the mux connection to the spawned server is no longer usable, for any reason
-/// (mux driver ended, spawned process exited, whichever comes first — see [`cold_start`]).
-///
-/// `Shared` (not a plain one-shot `BoxFuture`) specifically so it can be polled twice without
-/// being consumed: once during the startup grace period (see [`run`]), and again by the
-/// long-running background watcher — a plain future would be dropped (and the watch lost) if the
-/// first poll won a `tokio::time::timeout` race.
-type DiedFuture = futures::future::Shared<futures::future::BoxFuture<'static, ()>>;
 
 /// How long to wait, after a successful cold start, for the spawned Windows server to prove it's
 /// actually still alive before reporting startup success.
@@ -51,11 +39,9 @@ const STARTUP_GRACE_PERIOD: Duration = Duration::from_millis(500);
 /// The socket-activation environment is read before the tokio runtime starts: unsetting it is
 /// only sound while this process has a single thread.
 fn main() -> ExitCode {
-    // SAFETY: still single-threaded — no runtime, no other thread exists yet. Unsetting
-    // `LISTEN_PID`/`LISTEN_FDS` keeps the spawned server from seeing sockets meant for this
-    // process; the fds themselves come back close-on-exec.
-    let inherited_sockets: Vec<RawFd> = match unsafe { sd_notify::listen_fds_and_unset_env() } {
-        Ok(fds) => fds.collect(),
+    // SAFETY: still single-threaded — no runtime, no other thread exists yet.
+    let inherited_sockets: Vec<RawFd> = match unsafe { systemd::take_listen_fds() } {
+        Ok(fds) => fds,
         Err(e) => {
             eprintln!("sockrelay-client: invalid socket activation environment: {e}");
             return ExitCode::FAILURE;
@@ -72,39 +58,32 @@ fn main() -> ExitCode {
         }
     };
 
-    let log_filter = match config::effective_log_filter(std::env::var("RUST_LOG").ok()) {
+    let log_filter = match LogFilter::from_env() {
         Ok(filter) => filter,
         Err(e) => {
-            eprintln!("sockrelay-client: invalid RUST_LOG: {e}");
+            eprintln!("sockrelay-client: {e}");
             return ExitCode::FAILURE;
         }
     };
-
-    tracing_subscriber::fmt()
-        .with_writer(std::io::stderr)
-        .with_ansi(std::io::stderr().is_terminal())
-        .with_env_filter(
-            tracing_subscriber::EnvFilter::try_new(&log_filter)
-                .expect("effective_log_filter validated it"),
-        )
-        .init();
+    let server_args = config.server_args(&log_filter);
+    log::init(log_filter);
 
     tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()
         .expect("failed to build the tokio runtime")
-        .block_on(run(config, listen_on, log_filter))
+        .block_on(run(config, listen_on, server_args))
 }
 
 /// Claims the socket, starts the Windows server and relays connections until the connection to
 /// the server dies, which ends the process with a non-zero status for systemd to restart it.
 /// Returns only on a startup failure.
-async fn run(config: Config, listen_on: ListenOn, log_filter: String) -> ExitCode {
+async fn run(config: Config, listen_on: ListenOn, server_args: Vec<String>) -> ExitCode {
     let listener = match listen_on {
         ListenOn::Path { path, mode } => unix_listener::bind(&path, mode)
             .await
             .map_err(|e| tracing::error!(error = %e, "failed to bind the unix socket")),
-        ListenOn::Inherited(fd) => unix_listener::from_inherited(fd)
+        ListenOn::Inherited(fd) => systemd::listener_from_fd(fd)
             .map_err(|e| tracing::error!(error = %e, "failed to use the socket systemd passed")),
     };
     let Ok(listener) = listener else {
@@ -113,39 +92,45 @@ async fn run(config: Config, listen_on: ListenOn, log_filter: String) -> ExitCod
 
     // Spawned exactly once, here, before accepting any connections. If this fails, or if the
     // connection dies later (see the watcher below), the process exits rather than retrying.
-    let (handle, died, server_stderr) =
-        match cold_start(config.server_exe.clone(), config.server_args(&log_filter)).await {
-            Ok(v) => v,
-            Err(e) => {
-                tracing::error!(error = %e, "failed to start the windows server");
-                return ExitCode::FAILURE;
-            }
-        };
+    let mut server = match Server::spawn(config.server_exe.clone(), server_args).await {
+        Ok(server) => server,
+        Err(e) => {
+            tracing::error!(error = %e, "failed to start the windows server");
+            return ExitCode::FAILURE;
+        }
+    };
 
     // Wired up before the grace period below: the server's own "pipe does not exist" diagnostic
     // arrives during that window, and nothing reads a piped stderr unless something does.
-    tokio::spawn(server_log::forward(server_stderr, tokio::io::stderr()));
+    tokio::spawn(log::forward_server_stderr(
+        server.stderr,
+        tokio::io::stderr(),
+    ));
 
-    // `died.clone()` leaves `died` itself for the long-running watcher below.
-    if tokio::time::timeout(STARTUP_GRACE_PERIOD, died.clone())
-        .await
-        .is_ok()
-    {
+    let (handle, driver) = mux::client(tokio::io::join(server.stdout, server.stdin));
+    let mut driver_task = tokio::spawn(driver);
+
+    if let Err(e) = lifecycle::wait_alive(&mut server.child, STARTUP_GRACE_PERIOD).await {
         tracing::error!(
-            "the spawned Windows server exited immediately after starting — check \
-             --pipe-path and that the real agent is running"
+            error = %e,
+            "the spawned Windows server didn't stay up — check --pipe-path and that the real \
+             agent is running"
         );
         return ExitCode::FAILURE;
     }
 
     tracing::info!("started");
     // With `Type=notify`, systemd counts the service as started only now, after the grace period.
-    if let Err(e) = sd_notify::notify(&[sd_notify::NotifyState::Ready]) {
+    if let Err(e) = systemd::notify_ready() {
         tracing::warn!(error = %e, "failed to notify systemd of readiness");
     }
 
+    let mut child = server.child;
     tokio::spawn(async move {
-        died.await;
+        lifecycle::died(&mut child, &mut driver_task).await;
+        // Dropping a `JoinHandle` only detaches its task; the driver has to be stopped explicitly
+        // when the server exits first.
+        driver_task.abort();
         tracing::error!("mux connection to the server died, exiting");
         std::process::exit(1);
     });
@@ -171,42 +156,4 @@ async fn handle_connection(mut unix_stream: tokio::net::UnixStream, handle: MuxH
     if let Err(e) = relay::relay(&mut unix_stream, &mut stream).await {
         tracing::warn!(error = %e, "relay ended with an error");
     }
-}
-
-/// Spawns the Windows server and builds the mux connection over its joined stdio. This is the
-/// only place that touches the real `SpawnedServer`/`mux::client` — it isn't unit tested (there's
-/// no Windows binary to spawn on this host); exercise it against a real build with the recipe in
-/// this crate's README.
-///
-/// The returned "died" future watches *both* the mux driver and the child process directly (via
-/// `SpawnedServer::wait()`), resolving on whichever ends first — the daemon exits as soon as
-/// either side of the connection is no longer usable, rather than lingering as a half-alive
-/// process. The returned `ChildStderr` is the server's own diagnostic stream (see
-/// `server_log::forward`) — taken here, before `server` moves into the "died" future's closure,
-/// since it can't be taken out again afterward.
-async fn cold_start(
-    server_exe_path: PathBuf,
-    server_args: Vec<String>,
-) -> Result<(MuxHandle, DiedFuture, tokio::process::ChildStderr), SpawnError> {
-    let mut server = SpawnedServer::spawn(server_exe_path, server_args).await?;
-    let io = server.take_io()?;
-    let stderr = server.take_stderr()?;
-    let (handle, driver) = mux::client(io);
-    let mut driver_task = tokio::spawn(driver);
-
-    let died: DiedFuture = (Box::pin(async move {
-        let mut server = server;
-        // `&mut driver_task` (not moving it in) so that, if the child exits first, the still-
-        // owned handle can be aborted explicitly instead of merely dropped — dropping a
-        // `JoinHandle` only detaches the task, it doesn't stop it.
-        tokio::select! {
-            _ = &mut driver_task => {}
-            _ = server.wait() => {
-                driver_task.abort();
-            }
-        }
-    }) as futures::future::BoxFuture<'static, ()>)
-        .shared();
-
-    Ok((handle, died, stderr))
 }

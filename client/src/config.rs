@@ -3,6 +3,7 @@ use std::os::fd::RawFd;
 use std::path::PathBuf;
 
 use clap::Parser;
+use librelay::client::log::LogFilter;
 
 const DEFAULT_SOCKET_PATH: &str = ".ssh/agent.sock";
 const DEFAULT_SOCKET_MODE: u32 = 0o600;
@@ -114,31 +115,18 @@ impl Config {
 
     /// The argv this process passes when spawning `sockrelay-server.exe` — the only channel that
     /// actually reaches it (see this module's doc comment on why env vars don't).
-    pub fn server_args(&self, log_filter: &str) -> Vec<String> {
-        vec![
-            "--log-filter".to_string(),
-            log_filter.to_string(),
+    pub fn server_args(&self, log_filter: &LogFilter) -> Vec<String> {
+        let mut args = Vec::from(log_filter.server_args());
+        args.extend([
             "--pipe-path".to_string(),
             self.pipe_path.clone(),
             "--connect-timeout-secs".to_string(),
             self.connect_timeout_secs.to_string(),
             "--jitter-max-ms".to_string(),
             self.jitter_max_ms.to_string(),
-        ]
+        ]);
+        args
     }
-}
-
-/// The `tracing` filter both this process and the spawned server log with: `RUST_LOG` when set
-/// and non-empty, `info` otherwise. Validated here, so a typo is reported once by the process
-/// that read it instead of making the server exit at startup.
-pub fn effective_log_filter(
-    rust_log: Option<String>,
-) -> Result<String, tracing_subscriber::filter::ParseError> {
-    let filter = rust_log
-        .filter(|filter| !filter.is_empty())
-        .unwrap_or_else(|| "info".to_string());
-    tracing_subscriber::EnvFilter::try_new(&filter)?;
-    Ok(filter)
 }
 
 fn parse_octal_mode(value: &str) -> Result<u32, String> {
@@ -225,27 +213,9 @@ mod tests {
     }
 
     #[test]
-    fn forwards_rust_log_to_the_server() {
-        assert_eq!(
-            effective_log_filter(Some("debug,yamux=warn".to_string())).unwrap(),
-            "debug,yamux=warn"
-        );
-    }
-
-    #[test]
-    fn falls_back_to_info_when_rust_log_is_unset_or_empty() {
-        assert_eq!(effective_log_filter(None).unwrap(), "info");
-        assert_eq!(effective_log_filter(Some(String::new())).unwrap(), "info");
-    }
-
-    #[test]
-    fn refuses_an_invalid_rust_log() {
-        assert!(effective_log_filter(Some("sockrelay_client=loud".to_string())).is_err());
-    }
-
-    #[test]
     fn passes_the_log_filter_to_the_server() {
-        let args = parse(&[]).server_args("debug");
+        let filter = LogFilter::parse(Some("debug".to_string())).unwrap();
+        let args = parse(&[]).server_args(&filter);
         let at = args.iter().position(|arg| arg == "--log-filter").unwrap();
         assert_eq!(args[at + 1], "debug");
     }
