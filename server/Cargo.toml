@@ -21,3 +21,6 @@ windows-sys = { workspace = true }
 rand = { workspace = true }
 clap = { workspace = true }
 librelay = { workspace = true, features = ["server"] }
+
+[lints]
+workspace = true

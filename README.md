@@ -189,3 +189,8 @@ client is unix-only, so only `-p sockrelay-server` builds for Windows.
   than masking it, and systemd restarts it.
 - A saturated agent produces a bounded failure (`--connect-timeout-secs`) rather than a hang or a
   silently retried request.
+
+## License
+
+Licensed under either of [Apache License, Version 2.0](LICENSE-APACHE) or [MIT license](LICENSE-MIT)
+at your option.

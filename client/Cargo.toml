@@ -19,3 +19,5 @@ thiserror = { workspace = true }
 clap = { workspace = true }
 librelay = { workspace = true, features = ["client"] }
 
+[lints]
+workspace = true
