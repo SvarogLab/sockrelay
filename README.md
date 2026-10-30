@@ -97,8 +97,14 @@ once if `--pipe-path` names no running agent, and `sockrelay-client` waits 500ms
 prove it stays up, so a wrong pipe or a stopped agent fails the start rather than the first
 connection. Any startup failure exits non-zero with its reason in the journal.
 
-`systemctl --user stop sockrelay` stops gracefully: the client stops accepting, gives connections
-in flight up to 5 seconds, closes the link, and the server exits on its own.
+`systemctl --user stop sockrelay` stops gracefully, even while the service is still starting: the
+client stops accepting, gives connections in flight up to 5 seconds, closes the link, and the
+server exits on its own. A server still running 5 seconds later fails the stop, and systemd kills
+it.
+
+The client also exits non-zero, for systemd to restart it, if the socket it was passed stops
+accepting connections for good; a transient `accept()` failure, such as running out of file
+descriptors, is retried after `--accept-error-backoff-ms`.
 
 For debugging, with the units stopped, `systemd-socket-activate` passes a socket the way the unit
 does:

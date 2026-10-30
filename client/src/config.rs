@@ -63,7 +63,6 @@ pub struct Config {
 }
 
 impl Config {
-    /// The arguments `sockrelay-server.exe` is started with.
     pub fn server_args(&self, log_filter: &LogFilter) -> Vec<String> {
         let mut args = Vec::from(log_filter.server_args());
         args.extend([
