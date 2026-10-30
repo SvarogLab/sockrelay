@@ -30,16 +30,12 @@ including the old bridge's failure caught live in the same run.
   [Building](#building) below) accepts yamux streams from the client and relays each one to a
   fresh handle on the real `ssh-agent` named pipe.
 
-Just two crates — an earlier `sockrelay-common` (shared mux error types and a byte-relay helper)
-was folded back in once one of its two pieces turned out to be single-consumer: `MuxError` is now
-duplicated verbatim in both `client::mux` and `server::mux` (identical, 9 lines, cheaper to keep in
-sync by hand than to maintain a whole extra crate for), and the byte-relay helper moved into
-`client::relay`, its only remaining caller.
-
-What doesn't depend on the relayed protocol — spawning the server, watching it, logging and
-systemd integration — comes from [`librelay`](https://github.com/SvarogLab/librelay), shared with
+Just two crates. What doesn't depend on the relayed protocol — spawning the server, the yamux
+connection over its stdio, watching it, logging and systemd integration — comes from
+[`librelay`](https://github.com/SvarogLab/librelay), shared with
 [`credrelay`](https://github.com/SvarogLab/credrelay), a relay of the same shape for the Windows
-Credential Manager.
+Credential Manager. What's left here is the relay itself: the unix socket on one side, the named
+pipe on the other, and the bytes copied between each and its yamux stream.
 
 A separate load-testing tool used during this project's own development to measure behavior under
 concurrent load against the real agent lives in its own repository,

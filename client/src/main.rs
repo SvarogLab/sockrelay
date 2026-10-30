@@ -1,5 +1,4 @@
 mod config;
-mod mux;
 mod relay;
 #[cfg(test)]
 mod test_support;
@@ -12,11 +11,10 @@ use std::time::Duration;
 use clap::Parser;
 use librelay::client::log::{self, LogFilter};
 use librelay::client::spawn::Server;
-use librelay::client::{lifecycle, systemd};
+use librelay::client::{lifecycle, mux, systemd};
 use tokio_util::compat::FuturesAsyncReadCompatExt;
 
 use config::{Config, ListenOn};
-use mux::MuxHandle;
 
 /// How long to wait, after a successful cold start, for the spawned Windows server to prove it's
 /// actually still alive before reporting startup success.
@@ -152,7 +150,7 @@ async fn run(config: Config, listen_on: ListenOn, server_args: Vec<String>) -> E
     unreachable!("the accept loop runs for as long as the process does")
 }
 
-async fn handle_connection(mut unix_stream: tokio::net::UnixStream, handle: MuxHandle) {
+async fn handle_connection(mut unix_stream: tokio::net::UnixStream, handle: mux::MuxHandle) {
     let stream = match handle.open_stream().await {
         Ok(stream) => stream,
         Err(e) => {

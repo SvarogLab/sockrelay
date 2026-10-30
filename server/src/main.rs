@@ -1,9 +1,9 @@
 mod config;
-mod mux;
 mod pipe;
 mod watchdog;
 
 use clap::Parser;
+use librelay::server::mux;
 
 use config::Config;
 

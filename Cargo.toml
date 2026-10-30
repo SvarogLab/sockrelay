@@ -16,7 +16,6 @@ tokio-util = { version = "0.7.19", features = ["compat", "io"] }
 yamux = "0.14"
 tracing = "0.1.44"
 thiserror = "2.0.19"
-futures = "0.3.33"
 libc = "0.2.189"
 clap = { version = "4.6.4", features = ["derive"] }
 librelay = { git = "https://github.com/SvarogLab/librelay", tag = "v0.1.0", default-features = false }
