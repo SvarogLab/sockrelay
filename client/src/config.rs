@@ -90,8 +90,10 @@ impl Config {
 
     /// The argv this process passes when spawning `sockrelay-server.exe` — the only channel that
     /// actually reaches it (see this module's doc comment on why env vars don't).
-    pub fn server_args(&self) -> Vec<String> {
+    pub fn server_args(&self, log_filter: &str) -> Vec<String> {
         vec![
+            "--log-filter".to_string(),
+            log_filter.to_string(),
             "--pipe-path".to_string(),
             self.pipe_path.clone(),
             "--connect-timeout-secs".to_string(),
@@ -100,6 +102,19 @@ impl Config {
             self.jitter_max_ms.to_string(),
         ]
     }
+}
+
+/// The `tracing` filter both this process and the spawned server log with: `RUST_LOG` when set
+/// and non-empty, `info` otherwise. Validated here, so a typo is reported once by the process
+/// that read it instead of making the server exit at startup.
+pub fn effective_log_filter(
+    rust_log: Option<String>,
+) -> Result<String, tracing_subscriber::filter::ParseError> {
+    let filter = rust_log
+        .filter(|filter| !filter.is_empty())
+        .unwrap_or_else(|| "info".to_string());
+    tracing_subscriber::EnvFilter::try_new(&filter)?;
+    Ok(filter)
 }
 
 fn parse_octal_mode(value: &str) -> Result<u32, String> {
@@ -111,4 +126,36 @@ fn parse_octal_mode(value: &str) -> Result<u32, String> {
 
 fn home_dir() -> Option<PathBuf> {
     env::var_os("HOME").map(PathBuf::from)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn forwards_rust_log_to_the_server() {
+        assert_eq!(
+            effective_log_filter(Some("debug,yamux=warn".to_string())).unwrap(),
+            "debug,yamux=warn"
+        );
+    }
+
+    #[test]
+    fn falls_back_to_info_when_rust_log_is_unset_or_empty() {
+        assert_eq!(effective_log_filter(None).unwrap(), "info");
+        assert_eq!(effective_log_filter(Some(String::new())).unwrap(), "info");
+    }
+
+    #[test]
+    fn refuses_an_invalid_rust_log() {
+        assert!(effective_log_filter(Some("sockrelay_client=loud".to_string())).is_err());
+    }
+
+    #[test]
+    fn passes_the_log_filter_to_the_server() {
+        let config = Config::try_parse_from(["sockrelay-client"]).unwrap();
+        let args = config.server_args("debug");
+        let at = args.iter().position(|arg| arg == "--log-filter").unwrap();
+        assert_eq!(args[at + 1], "debug");
+    }
 }
