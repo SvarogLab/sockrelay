@@ -106,6 +106,7 @@ mod tests {
 
     #[test]
     fn does_not_color_a_log_file() {
+        let _guard = crate::test_support::UMASK.blocking_lock();
         let dir = tempfile::tempdir().unwrap();
         let sink = LogSink::open(Some(&dir.path().join("client.log"))).unwrap();
         assert!(!sink.wants_color(true));
