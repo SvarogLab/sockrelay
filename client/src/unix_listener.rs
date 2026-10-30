@@ -205,22 +205,12 @@ async fn acquire_startup_lock(socket_path: &Path) -> Result<std::fs::File, Liste
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::LazyLock;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use tokio::sync::mpsc;
 
-    /// `umask` is process-wide state, and cargo runs `#[tokio::test]` functions in parallel on
-    /// separate OS threads within the same process — every test in this module goes through
-    /// `bind()`, which briefly changes the umask (see `RestrictiveUmask`). Without serializing
-    /// them against each other, one test's temporary umask change could be clobbered mid-flight
-    /// by another running concurrently, corrupting *both* tests' socket permissions in a way
-    /// that can't happen in production (where `bind()` is only ever called once, at startup).
-    static UMASK_TEST_LOCK: LazyLock<tokio::sync::Mutex<()>> =
-        LazyLock::new(|| tokio::sync::Mutex::new(()));
-
     #[tokio::test]
     async fn accept_loop_invokes_the_handler_for_each_accepted_connection() {
-        let _guard = UMASK_TEST_LOCK.lock().await;
+        let _guard = crate::test_support::UMASK.lock().await;
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("agent.sock");
 
@@ -282,7 +272,7 @@ mod tests {
 
     #[tokio::test]
     async fn bind_reclaims_a_stale_socket_file() {
-        let _guard = UMASK_TEST_LOCK.lock().await;
+        let _guard = crate::test_support::UMASK.lock().await;
         let _no_children = crate::test_support::CHILD_PROCESSES.write().await;
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("agent.sock");
@@ -301,7 +291,7 @@ mod tests {
 
     #[tokio::test]
     async fn bind_refuses_to_steal_a_live_listener() {
-        let _guard = UMASK_TEST_LOCK.lock().await;
+        let _guard = crate::test_support::UMASK.lock().await;
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("agent.sock");
 
@@ -317,7 +307,7 @@ mod tests {
     async fn bind_creates_the_socket_with_the_requested_mode() {
         use std::os::unix::fs::PermissionsExt;
 
-        let _guard = UMASK_TEST_LOCK.lock().await;
+        let _guard = crate::test_support::UMASK.lock().await;
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("agent.sock");
 
@@ -328,7 +318,7 @@ mod tests {
 
     #[tokio::test]
     async fn bind_restores_the_previous_umask_afterward() {
-        let _guard = UMASK_TEST_LOCK.lock().await;
+        let _guard = crate::test_support::UMASK.lock().await;
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("agent.sock");
 

@@ -46,6 +46,12 @@ impl LogSink {
         })
     }
 
+    /// Whether `tracing` may color its output: only when every write lands on a terminal, since
+    /// the journal (stderr under systemd) and a log file both keep escape sequences verbatim.
+    pub fn wants_color(&self, stderr_is_terminal: bool) -> bool {
+        stderr_is_terminal && self.file.is_none()
+    }
+
     /// Stops mirroring further writes to stderr — called once, right alongside `detach_stdio`,
     /// once a successful daemonized start means the invoking terminal is no longer relevant. Never
     /// called at all in `--foreground` (see this type's own doc comment).
@@ -81,5 +87,28 @@ impl<'a> tracing_subscriber::fmt::MakeWriter<'a> for LogSink {
 
     fn make_writer(&'a self) -> Self::Writer {
         self.clone()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn colors_a_terminal_with_no_log_file() {
+        assert!(LogSink::open(None).unwrap().wants_color(true));
+    }
+
+    #[test]
+    fn does_not_color_stderr_that_is_not_a_terminal() {
+        assert!(!LogSink::open(None).unwrap().wants_color(false));
+    }
+
+    #[test]
+    fn does_not_color_a_log_file() {
+        let _guard = crate::test_support::UMASK.blocking_lock();
+        let dir = tempfile::tempdir().unwrap();
+        let sink = LogSink::open(Some(&dir.path().join("client.log"))).unwrap();
+        assert!(!sink.wants_color(true));
     }
 }

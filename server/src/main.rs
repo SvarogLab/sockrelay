@@ -3,6 +3,8 @@ mod mux;
 mod pipe;
 mod watchdog;
 
+use std::io::IsTerminal;
+
 use clap::Parser;
 
 use config::Config;
@@ -14,6 +16,7 @@ async fn main() {
     // middle of the binary frame stream and corrupt it.
     tracing_subscriber::fmt()
         .with_writer(std::io::stderr)
+        .with_ansi(std::io::stderr().is_terminal())
         .init();
 
     let config = Config::parse();
