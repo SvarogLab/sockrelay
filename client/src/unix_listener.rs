@@ -1,5 +1,6 @@
 use std::future::Future;
 use std::io;
+use std::os::fd::{FromRawFd, OwnedFd, RawFd};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
@@ -31,9 +32,21 @@ pub async fn bind(socket_path: impl AsRef<Path>, mode: u32) -> Result<UnixListen
     bind_reclaiming_stale(socket_path.as_ref(), mode).await
 }
 
+/// Takes over a listening unix socket systemd has already bound and passed in as `fd` (socket
+/// activation). Fails if `fd` isn't a unix socket — a `.socket` unit with a TCP `ListenStream=`,
+/// say.
+pub fn from_inherited(fd: RawFd) -> io::Result<UnixListener> {
+    // SAFETY: systemd passes each listening fd to this process alone, and `main` collects them
+    // exactly once.
+    let listener = std::os::unix::net::UnixListener::from(unsafe { OwnedFd::from_raw_fd(fd) });
+    // Fails with InvalidInput unless the fd is AF_UNIX.
+    listener.local_addr()?;
+    listener.set_nonblocking(true)?;
+    UnixListener::from_std(listener)
+}
+
 /// Calls `handle` (on its own spawned task) for every connection accepted on `listener`, for as
-/// long as the process runs. `socket_path` is only used to label log messages; `listener` must
-/// already be bound to it (see [`bind`]).
+/// long as the process runs.
 ///
 /// A transient `accept()` error (`EMFILE`/`ENFILE`/`ECONNABORTED` and the like) is logged and
 /// retried after `error_backoff` rather than ending the loop — this daemon exists specifically to
@@ -43,16 +56,15 @@ pub async fn bind(socket_path: impl AsRef<Path>, mode: u32) -> Result<UnixListen
 /// it's actually broken. `error_backoff` should be long enough to not hot-spin burning CPU on a
 /// sustained condition like fd exhaustion, short enough not to noticeably delay recovery once it
 /// clears — configurable (CLI flag or env var, see `config.rs`) rather than hardcoded.
-pub async fn accept_loop<F, Fut>(
-    socket_path: impl AsRef<Path>,
-    listener: UnixListener,
-    error_backoff: Duration,
-    handle: F,
-) where
+pub async fn accept_loop<F, Fut>(listener: UnixListener, error_backoff: Duration, handle: F)
+where
     F: Fn(UnixStream) -> Fut + Clone + Send + 'static,
     Fut: Future<Output = ()> + Send + 'static,
 {
-    let path = socket_path.as_ref();
+    let path = listener
+        .local_addr()
+        .ok()
+        .and_then(|addr| addr.as_pathname().map(Path::to_path_buf));
     loop {
         match listener.accept().await {
             Ok((stream, _addr)) => {
@@ -193,42 +205,26 @@ async fn acquire_startup_lock(socket_path: &Path) -> Result<std::fs::File, Liste
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::LazyLock;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use tokio::sync::mpsc;
 
-    /// `umask` is process-wide state, and cargo runs `#[tokio::test]` functions in parallel on
-    /// separate OS threads within the same process — every test in this module goes through
-    /// `bind()`, which briefly changes the umask (see `RestrictiveUmask`). Without serializing
-    /// them against each other, one test's temporary umask change could be clobbered mid-flight
-    /// by another running concurrently, corrupting *both* tests' socket permissions in a way
-    /// that can't happen in production (where `bind()` is only ever called once, at startup).
-    static UMASK_TEST_LOCK: LazyLock<tokio::sync::Mutex<()>> =
-        LazyLock::new(|| tokio::sync::Mutex::new(()));
-
     #[tokio::test]
     async fn accept_loop_invokes_the_handler_for_each_accepted_connection() {
-        let _guard = UMASK_TEST_LOCK.lock().await;
+        let _guard = crate::test_support::UMASK.lock().await;
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("agent.sock");
 
         let listener = bind(&path, 0o600).await.unwrap();
         let (tx, mut rx) = mpsc::unbounded_channel::<Vec<u8>>();
-        let accept_path = path.clone();
         tokio::spawn(async move {
-            let _ = accept_loop(
-                accept_path,
-                listener,
-                Duration::from_millis(100),
-                move |mut stream| {
-                    let tx = tx.clone();
-                    async move {
-                        let mut buf = Vec::new();
-                        let _ = stream.read_to_end(&mut buf).await;
-                        let _ = tx.send(buf);
-                    }
-                },
-            )
+            let _ = accept_loop(listener, Duration::from_millis(100), move |mut stream| {
+                let tx = tx.clone();
+                async move {
+                    let mut buf = Vec::new();
+                    let _ = stream.read_to_end(&mut buf).await;
+                    let _ = tx.send(buf);
+                }
+            })
             .await;
         });
 
@@ -244,8 +240,39 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn from_inherited_accepts_on_an_already_bound_socket() {
+        use std::os::fd::IntoRawFd;
+
+        let _guard = crate::test_support::UMASK.lock().await;
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("agent.sock");
+        let fd = std::os::unix::net::UnixListener::bind(&path)
+            .unwrap()
+            .into_raw_fd();
+
+        let listener = from_inherited(fd).unwrap();
+        let accepted = tokio::spawn(async move { listener.accept().await.map(|_| ()) });
+        tokio::net::UnixStream::connect(&path).await.unwrap();
+        tokio::time::timeout(Duration::from_secs(5), accepted)
+            .await
+            .expect("connection was not accepted")
+            .unwrap()
+            .unwrap();
+    }
+
+    #[test]
+    fn from_inherited_refuses_a_tcp_socket() {
+        use std::os::fd::IntoRawFd;
+
+        let fd = std::net::TcpListener::bind("127.0.0.1:0")
+            .unwrap()
+            .into_raw_fd();
+        assert!(from_inherited(fd).is_err());
+    }
+
+    #[tokio::test]
     async fn bind_reclaims_a_stale_socket_file() {
-        let _guard = UMASK_TEST_LOCK.lock().await;
+        let _guard = crate::test_support::UMASK.lock().await;
         let _no_children = crate::test_support::CHILD_PROCESSES.write().await;
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("agent.sock");
@@ -264,7 +291,7 @@ mod tests {
 
     #[tokio::test]
     async fn bind_refuses_to_steal_a_live_listener() {
-        let _guard = UMASK_TEST_LOCK.lock().await;
+        let _guard = crate::test_support::UMASK.lock().await;
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("agent.sock");
 
@@ -280,7 +307,7 @@ mod tests {
     async fn bind_creates_the_socket_with_the_requested_mode() {
         use std::os::unix::fs::PermissionsExt;
 
-        let _guard = UMASK_TEST_LOCK.lock().await;
+        let _guard = crate::test_support::UMASK.lock().await;
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("agent.sock");
 
@@ -291,7 +318,7 @@ mod tests {
 
     #[tokio::test]
     async fn bind_restores_the_previous_umask_afterward() {
-        let _guard = UMASK_TEST_LOCK.lock().await;
+        let _guard = crate::test_support::UMASK.lock().await;
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("agent.sock");
 
