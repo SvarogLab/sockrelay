@@ -7,14 +7,13 @@ mod spawn;
 mod test_support;
 mod unix_listener;
 
-use std::io::{IsTerminal, Write};
+use std::io::IsTerminal;
 use std::os::fd::RawFd;
 use std::path::PathBuf;
 use std::time::Duration;
 
 use clap::Parser;
 use futures::FutureExt;
-use tokio::io::AsyncReadExt;
 use tokio_util::compat::FuturesAsyncReadCompatExt;
 
 use config::{Config, ListenOn};
@@ -152,6 +151,14 @@ fn main() -> std::process::ExitCode {
         }
     };
 
+    let log_filter = match config::effective_log_filter(std::env::var("RUST_LOG").ok()) {
+        Ok(filter) => filter,
+        Err(e) => {
+            eprintln!("sockrelay-client: invalid RUST_LOG: {e}");
+            return std::process::ExitCode::FAILURE;
+        }
+    };
+
     let log_sink = match LogSink::open(config.log_file.as_deref()) {
         Ok(sink) => sink,
         Err(e) => {
@@ -165,10 +172,14 @@ fn main() -> std::process::ExitCode {
     tracing_subscriber::fmt()
         .with_writer(log_sink.clone())
         .with_ansi(log_sink.wants_color(std::io::stderr().is_terminal()))
+        .with_env_filter(
+            tracing_subscriber::EnvFilter::try_new(&log_filter)
+                .expect("effective_log_filter validated it"),
+        )
         .init();
 
     if config.foreground || matches!(listen_on, ListenOn::Inherited(_)) {
-        run(config, listen_on, log_sink, Mode::Foreground);
+        run(config, listen_on, log_filter, log_sink, Mode::Foreground);
     }
 
     let mut fds = [0i32; 2];
@@ -197,7 +208,13 @@ fn main() -> std::process::ExitCode {
                 report(write_fd, 1);
                 std::process::exit(1);
             }
-            run(config, listen_on, log_sink, Mode::Daemon { write_fd });
+            run(
+                config,
+                listen_on,
+                log_filter,
+                log_sink,
+                Mode::Daemon { write_fd },
+            );
         }
         _child_pid => {
             // Original process: close the write end (only the child writes to it) and block
@@ -256,7 +273,13 @@ fn detach_stdio() {
 /// original process. Never returns: it either becomes the long-running daemon (until the accept
 /// loop's task tree eventually calls `std::process::exit` on its own — see `cold_start`'s "died"
 /// watcher below) or reports a startup failure and exits immediately.
-fn run(config: Config, listen_on: ListenOn, log_sink: LogSink, mode: Mode) -> ! {
+fn run(
+    config: Config,
+    listen_on: ListenOn,
+    log_filter: String,
+    log_sink: LogSink,
+    mode: Mode,
+) -> ! {
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()
@@ -292,7 +315,7 @@ fn run(config: Config, listen_on: ListenOn, log_sink: LogSink, mode: Mode) -> ! 
         // this fails, or if the connection dies later (see the spawned watcher below), the
         // daemon just exits rather than trying to retry or respawn.
         let (handle, died, server_stderr) =
-            match cold_start(config.server_exe.clone(), config.server_args()).await {
+            match cold_start(config.server_exe.clone(), config.server_args(&log_filter)).await {
                 Ok(v) => v,
                 Err(e) => {
                     tracing::error!(error = %e, "failed to start the windows server");
@@ -300,14 +323,16 @@ fn run(config: Config, listen_on: ListenOn, log_sink: LogSink, mode: Mode) -> ! 
                 }
             };
 
-        // Forwards the spawned server's own stderr into our own log sink, raw and unparsed (it's
-        // already a fully formatted, timestamped line from the server's own `tracing` setup —
-        // see `server/src/main.rs`). This has to be wired up before the grace-period check below,
+        // Forwards the spawned server's own stderr into our own log sink, each line marked as the
+        // server's (see `log_sink::forward_server_lines`). This has to be wired up before the grace-period check below,
         // not after: the server's own "pipe does not exist" diagnostic (see its `pipe::exists`
         // check) is exactly the kind of message that arrives *during* that window, and unlike
         // before `.stderr(Stdio::piped())` was introduced (when this was simply inherited from
         // this process), nothing reads a piped stderr unless something explicitly does.
-        tokio::spawn(forward_server_stderr(server_stderr, log_sink.clone()));
+        tokio::spawn(log_sink::forward_server_lines(
+            server_stderr,
+            log_sink.clone(),
+        ));
 
         // Give the server a short grace period to prove it's actually still alive — cheap
         // insurance against reporting success for a process that's already exited (e.g. a
@@ -347,25 +372,6 @@ fn run(config: Config, listen_on: ListenOn, log_sink: LogSink, mode: Mode) -> ! 
     std::process::exit(0);
 }
 
-/// Copies raw bytes from the spawned server's stderr into `log_sink` until it's closed (the
-/// server exited, or closed its own stderr). Deliberately not line-aware or otherwise parsed —
-/// the server's own `tracing` setup already produced complete, formatted lines; this only needs
-/// to move bytes, not understand them.
-async fn forward_server_stderr(
-    mut server_stderr: tokio::process::ChildStderr,
-    mut log_sink: LogSink,
-) {
-    let mut buf = [0u8; 4096];
-    loop {
-        match server_stderr.read(&mut buf).await {
-            Ok(0) | Err(_) => return,
-            Ok(n) => {
-                let _ = log_sink.write_all(&buf[..n]);
-            }
-        }
-    }
-}
-
 async fn handle_connection(mut unix_stream: tokio::net::UnixStream, handle: MuxHandle) {
     let stream = match handle.open_stream().await {
         Ok(stream) => stream,
@@ -390,7 +396,7 @@ async fn handle_connection(mut unix_stream: tokio::net::UnixStream, handle: MuxH
 /// `SpawnedServer::wait()`), resolving on whichever ends first — the daemon exits as soon as
 /// either side of the connection is no longer usable, rather than lingering as a half-alive
 /// process. The returned `ChildStderr` is the server's own diagnostic stream (see
-/// `forward_server_stderr`) — taken here, before `server` moves into the "died" future's closure,
+/// `log_sink::forward_server_lines`) — taken here, before `server` moves into the "died" future's closure,
 /// since it can't be taken out again afterward.
 async fn cold_start(
     server_exe_path: PathBuf,

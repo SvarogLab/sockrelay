@@ -243,7 +243,7 @@ mod tests {
     async fn from_inherited_accepts_on_an_already_bound_socket() {
         use std::os::fd::IntoRawFd;
 
-        let _guard = UMASK_TEST_LOCK.lock().await;
+        let _guard = crate::test_support::UMASK.lock().await;
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("agent.sock");
         let fd = std::os::unix::net::UnixListener::bind(&path)

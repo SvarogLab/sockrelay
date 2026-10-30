@@ -105,7 +105,8 @@ a real agent, though — every flag below is required, with no default:
 sockrelay-server.exe \
   --pipe-path '\\.\pipe\openssh-ssh-agent' \
   --connect-timeout-secs 5 \
-  --jitter-max-ms 50
+  --jitter-max-ms 50 \
+  --log-filter info
 ```
 
 - `--connect-timeout-secs` bounds how long a connection attempt will wait for a saturated agent
@@ -113,6 +114,9 @@ sockrelay-server.exe \
 - `--jitter-max-ms` is the random delay slept between busy-retry attempts, which exists to break a
   thundering herd: multiple waiters woken by the same freed pipe instance would otherwise all
   retry in the same instant, and only one could win.
+- `--log-filter` is the `tracing` filter for the server's diagnostics, in `RUST_LOG` syntax; an
+  invalid one makes the server exit at startup. `sockrelay-client` passes its own (see
+  [Logging](#logging)), since `RUST_LOG` itself wouldn't reach the server.
 
 ## Running
 
@@ -200,10 +204,24 @@ journalctl --user -u sockrelay
 
 ## Logging
 
-`--log-file`, unset by default, controls where timestamped diagnostics *also* end up once
-daemonized — both `sockrelay-client`'s own, and the spawned `sockrelay-server`'s (its stderr is
-piped and forwarded verbatim into the same sink, since it has no concept of a log file, or of this
-process's `--log-file`, at all — it just writes to its own stderr exactly as if run directly). If
+Verbosity follows `RUST_LOG`, `info` when it's unset or empty. `sockrelay-client` passes the same
+filter to the server as `--log-filter`, so both log at the same level; an invalid `RUST_LOG` makes
+`sockrelay-client` exit before starting anything, with the parse error on stderr:
+
+```sh
+RUST_LOG=debug sockrelay-client --foreground
+```
+
+Every line the server writes to its stderr reaches the same place as the client's own
+diagnostics, with a `server:` prefix followed by a space and otherwise as the server wrote it. The
+server leaves out its own timestamp when its stderr isn't a terminal — which it never is when
+`sockrelay-client` spawns it — and the client adds none, so a server line carries a time only in the
+journal, not in `--log-file` or on a terminal.
+
+`--log-file`, unset by default, controls where diagnostics *also* end up once daemonized — both
+`sockrelay-client`'s own and the spawned `sockrelay-server`'s (its stderr is piped and forwarded
+into the same sink, since it has no concept of a log file, or of this process's `--log-file`, at
+all — it just writes to its own stderr exactly as if run directly). If
 `--log-file` isn't given, no file is ever opened — there's no implicit fallback path standing in
 for "no file".
 
