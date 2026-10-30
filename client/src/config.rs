@@ -42,7 +42,7 @@ pub struct Config {
     pub server_exe: PathBuf,
 
     /// Backoff before retrying `accept()` after a transient error, in milliseconds — see
-    /// `unix_listener::accept_loop`.
+    /// `accept_connections` in `main.rs`.
     #[arg(long, default_value_t = 100)]
     pub accept_error_backoff_ms: u64,
 
