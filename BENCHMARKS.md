@@ -4,29 +4,29 @@ Both measured with [`sockrelay-loadtest`](https://github.com/ffaxl/tools-sockrel
 parameters, same real Windows OpenSSH agent, back to back, on the same machine — 32 concurrent
 clients, 15 seconds, fresh connect-per-request (matching real `ssh`/`ssh-add` behavior).
 
-The old bridge was run on a throwaway socket path alongside the live, already-running `sockrelay`
-daemon, so this isn't a cold-start comparison — both were warmed up and otherwise idle.
+The old bridge was run on a throwaway socket (`$BRIDGE_SOCK` below) alongside the live,
+already-running `sockrelay` instance, so this isn't a cold-start comparison — both were warmed up
+and otherwise idle.
 
 ## Results
 
-|                        | sockrelay | socat + npiperelay |
-|------------------------|-----------|---------------------|
-| completed requests     | 4,812     | 856                 |
-| req/s                  | 316.1     | 55.2                |
-| connect p50            | 66.4µs    | 72.3µs              |
-| connect p99            | 224µs     | 4.14ms              |
-| connect max             | 1.40ms    | 8.02ms              |
-| request p50            | 66.6ms    | 346.6ms             |
-| request p99            | 482.4ms   | 1.576s              |
-| request max            | 801.0ms   | 2.002s              |
-| dial errors            | 0         | 1,402               |
-| request errors         | 0         | 270 (all "early eof")|
+|                    | sockrelay | socat + npiperelay    |
+|--------------------|-----------|-----------------------|
+| completed requests | 4,812     | 856                   |
+| req/s              | 316.1     | 55.2                  |
+| connect p50        | 66.4µs    | 72.3µs                |
+| connect p99        | 224µs     | 4.14ms                |
+| connect max        | 1.40ms    | 8.02ms                |
+| request p50        | 66.6ms    | 346.6ms               |
+| request p99        | 482.4ms   | 1.576s                |
+| request max        | 801.0ms   | 2.002s                |
+| dial errors        | 0         | 1,402                 |
+| request errors     | 0         | 270 (all "early eof") |
 
 ## Raw output
 
-```
-$ sockrelay-loadtest --target ~/.ssh/agent.sock --clients 32 --duration-secs 15
-sockrelay-loadtest: target="/home/seacat/.ssh/agent.sock" clients=32 duration=15s timeout=10s
+```text
+$ sockrelay-loadtest --target "$SSH_AUTH_SOCK" --clients 32 --duration-secs 15
 completed requests: 4812   wall time: 15.22s   req/s: 316.1
 
 phase           n        min        p50        p90        p99      p99.9        max
@@ -37,9 +37,8 @@ dial errors: 0
 request errors: 0
 ```
 
-```
-$ sockrelay-loadtest --target /tmp/socat-compare.sock --clients 32 --duration-secs 15
-sockrelay-loadtest: target="/tmp/socat-compare.sock" clients=32 duration=15s timeout=10s
+```text
+$ sockrelay-loadtest --target "$BRIDGE_SOCK" --clients 32 --duration-secs 15
 completed requests: 856   wall time: 15.50s   req/s: 55.2
 
 phase           n        min        p50        p90        p99      p99.9        max
@@ -56,7 +55,7 @@ request errors: 270
 
 The bridge's own log for that run contains **exactly 270** lines of:
 
-```
+```text
 open //./pipe/openssh-ssh-agent: All pipe instances are busy.
 ```
 

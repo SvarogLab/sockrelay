@@ -110,7 +110,7 @@ For debugging, with the units stopped, `systemd-socket-activate` passes a socket
 does:
 
 ```sh
-RUST_LOG=debug systemd-socket-activate -l /tmp/agent.sock sockrelay-client
+RUST_LOG=debug systemd-socket-activate -l "$XDG_RUNTIME_DIR/sockrelay-debug.sock" sockrelay-client
 ```
 
 ## Logging
@@ -174,6 +174,9 @@ merging it tags the commit and publishes the release.
 cargo test --workspace
 cargo clippy --workspace --all-targets --all-features -- -D warnings
 ```
+
+`client/tests/stop.rs` runs the built client under `systemd-socket-activate` (from the `systemd`
+package) against a stand-in server script, so it needs that tool on `PATH`.
 
 The server's pipe code only builds for Windows. Its tests run there, cross-compiled; WSL runs the
 test binary natively:

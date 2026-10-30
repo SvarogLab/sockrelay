@@ -19,26 +19,27 @@ Testing section for the environment it needs). Workspace-wide lints live in `[wo
 - Code that only builds on Windows gates its whole file with `#![cfg(windows)]`, so the workspace
   still checks and tests on Linux.
 - Tests sit in a `tests` module at the bottom of the file they test, or in `name/tests.rs` when they
-  outgrow it.
+  outgrow it. A test that drives the crate only from outside, through its public API or its built
+  binary, goes in `tests/`.
 
 ## Naming
 
 Types and functions say what they are in the domain: the `socket` is the unix socket on the Linux
 side, the `pipe` the Windows named pipe, a `stream` one yamux stream relaying one connection between
-the two. Test names are sentences stating the behaviour they hold.
+the two. Test names are sentences stating the behavior they hold.
 
 ## Errors
 
 - Each module that can fail has its own `thiserror` enum; errors cross a module boundary through a
   `From` impl or a `#[source]` field, not by stringifying.
 - `unwrap` belongs in tests. Elsewhere, an `expect` states the invariant that makes it unreachable.
-- A failure the process can't recover from (the server is gone, the socket can't be bound) ends the
-  process with a non-zero status; a supervisor restarts it.
+- A failure the process can't recover from (the server is gone, the socket systemd passed is
+  unusable) ends the process with a non-zero status; a supervisor restarts it.
 
 ## Comments
 
 Code says what it does; a comment says why, when the reason lives outside the code: a quirk of
-Windows, of WSL or of the protocol being relayed, with the behaviour it forces.
+Windows, of WSL or of the protocol being relayed, with the behavior it forces.
 
 ## Dependencies
 
