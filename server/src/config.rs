@@ -23,6 +23,24 @@ pub struct Config {
     /// `pipe::connect`.
     #[arg(long)]
     pub jitter_max_ms: u64,
+
+    /// `tracing` filter for this process's diagnostics, in `RUST_LOG` syntax. A flag rather than
+    /// `RUST_LOG` itself, since environment variables don't cross the WSL interop boundary.
+    #[arg(long, value_parser = parse_log_filter)]
+    pub log_filter: String,
+}
+
+impl Config {
+    pub fn log_filter(&self) -> tracing_subscriber::EnvFilter {
+        tracing_subscriber::EnvFilter::try_new(&self.log_filter)
+            .expect("--log-filter is validated while parsing")
+    }
+}
+
+fn parse_log_filter(value: &str) -> Result<String, String> {
+    tracing_subscriber::EnvFilter::try_new(value)
+        .map(|_| value.to_string())
+        .map_err(|e| e.to_string())
 }
 
 #[cfg(windows)]
@@ -32,5 +50,44 @@ impl Config {
             connect_timeout: std::time::Duration::from_secs(self.connect_timeout_secs),
             jitter_max_ms: self.jitter_max_ms,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const REQUIRED: [&str; 7] = [
+        "sockrelay-server",
+        "--pipe-path",
+        r"\\.\pipe\test",
+        "--connect-timeout-secs",
+        "5",
+        "--jitter-max-ms",
+        "50",
+    ];
+
+    #[test]
+    fn requires_a_log_filter() {
+        assert!(Config::try_parse_from(REQUIRED).is_err());
+    }
+
+    #[test]
+    fn accepts_a_valid_log_filter() {
+        let args = REQUIRED
+            .into_iter()
+            .chain(["--log-filter", "debug,yamux=warn"]);
+        assert_eq!(
+            Config::try_parse_from(args).unwrap().log_filter,
+            "debug,yamux=warn"
+        );
+    }
+
+    #[test]
+    fn refuses_an_invalid_log_filter() {
+        let args = REQUIRED
+            .into_iter()
+            .chain(["--log-filter", "sockrelay_server=loud"]);
+        assert!(Config::try_parse_from(args).is_err());
     }
 }

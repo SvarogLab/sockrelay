@@ -3,20 +3,31 @@ mod mux;
 mod pipe;
 mod watchdog;
 
+use std::io::IsTerminal;
+
 use clap::Parser;
 
 use config::Config;
 
 #[tokio::main]
 async fn main() {
+    let config = Config::parse();
+
     // Must write to stderr, not the default stdout: this process's own stdout *is* the yamux
     // transport (joined with stdin below) — any tracing output on stdout would land in the
-    // middle of the binary frame stream and corrupt it.
-    tracing_subscriber::fmt()
+    // middle of the binary frame stream and corrupt it. Off a terminal, stderr is the client's
+    // pipe, and the client or the journal stamps each line, so the server's own time would only
+    // repeat it.
+    let stderr_is_terminal = std::io::stderr().is_terminal();
+    let subscriber = tracing_subscriber::fmt()
         .with_writer(std::io::stderr)
-        .init();
-
-    let config = Config::parse();
+        .with_ansi(stderr_is_terminal)
+        .with_env_filter(config.log_filter());
+    if stderr_is_terminal {
+        subscriber.init();
+    } else {
+        subscriber.without_time().init();
+    }
 
     // Fails fast and loudly if the configured pipe doesn't exist at all (wrong `--pipe-path`, or
     // the real agent isn't running), instead of only discovering that on the first real relayed
