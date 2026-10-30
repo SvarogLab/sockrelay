@@ -4,6 +4,7 @@
 use std::os::unix::fs::PermissionsExt;
 use std::os::unix::process::ExitStatusExt;
 
+use std::path::{Path, PathBuf};
 use std::process::{Child, Command, ExitStatus, Stdio};
 use std::time::{Duration, Instant};
 
@@ -20,28 +21,10 @@ struct Relay {
 impl Relay {
     fn start(server_body: &str) -> Self {
         let dir = tempfile::tempdir().unwrap();
-        let server = dir.path().join("server");
-        let marker = dir.path().join("server-started");
-        std::fs::write(
-            &server,
-            format!("#!/bin/sh\ntouch '{}'\n{server_body}\n", marker.display()),
-        )
-        .unwrap();
-        std::fs::set_permissions(&server, std::fs::Permissions::from_mode(0o755)).unwrap();
-        let client = Command::new("systemd-socket-activate")
-            .arg("-l")
-            .arg(dir.path().join("agent.sock"))
-            .arg(env!("CARGO_BIN_EXE_sockrelay-client"))
-            .arg("--server-exe")
-            .arg(&server)
-            .stdin(Stdio::null())
-            .stderr(Stdio::null())
-            .spawn()
-            .unwrap();
-        // systemd-socket-activate execs the client only once the first connection arrives.
+        let server = write_server(dir.path(), server_body);
         let socket = dir.path().join("agent.sock");
-        wait_for(|| socket.exists(), "the socket");
-        drop(std::os::unix::net::UnixStream::connect(&socket).unwrap());
+        let client = spawn_socket_activated_client(&socket, &server);
+        activate(&socket);
         Self { dir, client }
     }
 
@@ -77,6 +60,38 @@ impl Drop for Relay {
         let _ = self.client.kill();
         let _ = self.client.wait();
     }
+}
+
+/// A stand-in server: a script that marks when it has started, then runs `body`.
+fn write_server(dir: &Path, body: &str) -> PathBuf {
+    let server = dir.join("server");
+    let marker = dir.join("server-started");
+    std::fs::write(
+        &server,
+        format!("#!/bin/sh\ntouch '{}'\n{body}\n", marker.display()),
+    )
+    .unwrap();
+    std::fs::set_permissions(&server, std::fs::Permissions::from_mode(0o755)).unwrap();
+    server
+}
+
+fn spawn_socket_activated_client(socket: &Path, server: &Path) -> Child {
+    Command::new("systemd-socket-activate")
+        .arg("-l")
+        .arg(socket)
+        .arg(env!("CARGO_BIN_EXE_sockrelay-client"))
+        .arg("--server-exe")
+        .arg(server)
+        .stdin(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .unwrap()
+}
+
+/// systemd-socket-activate execs the client only once the first connection arrives.
+fn activate(socket: &Path) {
+    wait_for(|| socket.exists(), "the socket");
+    drop(std::os::unix::net::UnixStream::connect(socket).unwrap());
 }
 
 fn wait_for(ready: impl Fn() -> bool, what: &str) {

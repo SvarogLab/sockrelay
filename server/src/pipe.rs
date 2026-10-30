@@ -96,9 +96,12 @@ async fn open_when_free(path: &str, jitter_max_ms: u64) -> io::Result<NamedPipeC
         match ClientOptions::new().open(path) {
             Err(e) if is_os_error(&e, ERROR_PIPE_BUSY) => {
                 let wait_path = path.to_string();
-                // Whether the wait saw a free instance, timed out or failed, the next open decides.
-                let _ =
-                    tokio::task::spawn_blocking(move || wait_for_free_instance(&wait_path)).await;
+                let waited =
+                    tokio::task::spawn_blocking(move || wait_for_free_instance(&wait_path))
+                        .await
+                        .map_err(io::Error::other)?;
+                // Whether the wait saw a free instance or timed out, the next open decides.
+                let _ = waited;
                 let jitter = Duration::from_millis(rand::random_range(0..=jitter_max_ms));
                 tokio::time::sleep(jitter).await;
             }
