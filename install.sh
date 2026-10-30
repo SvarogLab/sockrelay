@@ -1,6 +1,6 @@
 #!/bin/sh
 # Builds both sockrelay binaries and installs them into /usr/local/bin, and the systemd user units
-# into the user unit directory. Stops any running server first and starts sockrelay.service again
+# into the user unit directory, then stops any server still running and restarts sockrelay.service
 # if it was running; enables nothing, and doesn't touch ~/.profile (or any other shell config) or
 # any other agent bridge — it prints the steps that are left. Safe to re-run to rebuild and
 # reinstall.
@@ -35,18 +35,6 @@ echo "==> Building sockrelay-client (release)"
 echo "==> Building sockrelay-server (release, $WIN_TARGET)"
 (cd "$REPO_DIR" && cargo xwin build --release -p sockrelay-server --target "$WIN_TARGET")
 
-# Windows keeps running the image of an .exe it already has open, even once the file under it is
-# replaced, so every server still running, the service's or one left over, ends before the new
-# one goes in; a client started afterwards would otherwise get an old server back. The socket
-# stays with systemd meanwhile, so a connection made during the install waits instead of failing.
-if systemctl --user show-environment >/dev/null 2>&1; then
-    WAS_ACTIVE="$(systemctl --user is-active sockrelay.service || true)"
-    systemctl --user stop sockrelay.service
-else
-    WAS_ACTIVE=inactive
-fi
-pkill -f "^/init $SERVER_BIN" || true
-
 echo "==> Installing binaries into $BIN_DIR (sudo)"
 sudo install -m 755 "$REPO_DIR/target/release/sockrelay-client" "$CLIENT_BIN"
 sudo install -m 755 "$REPO_DIR/target/$WIN_TARGET/release/sockrelay-server.exe" "$SERVER_BIN"
@@ -55,11 +43,22 @@ echo "==> Installing the systemd user units into $UNIT_DIR"
 mkdir -p "$UNIT_DIR"
 cp "$REPO_DIR/contrib/sockrelay.socket" "$UNIT_DIR/sockrelay.socket"
 sed "s|@BINDIR@|$BIN_DIR|g" "$REPO_DIR/contrib/sockrelay.service" > "$UNIT_DIR/sockrelay.service"
+
+# Windows keeps running the image of an .exe it already has open, even once the file under it is
+# replaced, so every server still running, the service's or one left over, is stopped only now
+# that the new files are in: a connection that starts the service meanwhile gets the new ones.
+WAS_ACTIVE=no
 if systemctl --user show-environment >/dev/null 2>&1; then
     systemctl --user daemon-reload
-    if [ "$WAS_ACTIVE" = active ]; then
-        systemctl --user start sockrelay.service
+    if systemctl --user is-active --quiet sockrelay.service; then
+        WAS_ACTIVE=yes
+        systemctl --user stop sockrelay.service
     fi
+fi
+pkill -f "^/init $SERVER_BIN" || true
+if [ "$WAS_ACTIVE" = yes ]; then
+    echo "==> Starting sockrelay.service again on the new binaries"
+    systemctl --user start sockrelay.service
 fi
 
 cat <<EOF

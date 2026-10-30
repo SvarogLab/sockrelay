@@ -139,9 +139,9 @@ cargo xwin build -p sockrelay-server --target aarch64-pc-windows-msvc
 
 `install.sh` does this for the host's architecture and installs both release binaries into
 `/usr/local/bin` and the units. Windows keeps running an `.exe` it already has open even after the
-file is replaced, so it first stops the service and any server left running, and starts the
-service again if it was running. It enables nothing and touches no shell config; it prints the
-remaining steps:
+file is replaced, so once the new files are in, it stops the service and any server left running,
+and starts the service again if it was running. It enables nothing and touches no shell config; it
+prints the remaining steps:
 
 ```sh
 ./install.sh
