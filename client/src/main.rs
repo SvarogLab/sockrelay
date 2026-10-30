@@ -127,11 +127,20 @@ async fn run(config: Config, listen_on: ListenOn, server_args: Vec<String>) -> E
 
     let mut child = server.child;
     tokio::spawn(async move {
-        lifecycle::died(&mut child, &mut driver_task).await;
-        // Dropping a `JoinHandle` only detaches its task; the driver has to be stopped explicitly
-        // when the server exits first.
-        driver_task.abort();
-        tracing::error!("mux connection to the server died, exiting");
+        match lifecycle::died(&mut child, &mut driver_task).await {
+            lifecycle::Died::Exited(status) => {
+                // Dropping a `JoinHandle` only detaches its task; the driver has to be stopped
+                // explicitly.
+                driver_task.abort();
+                match status {
+                    Ok(status) => tracing::error!(%status, "the windows server exited, exiting"),
+                    Err(e) => tracing::error!(error = %e, "lost the windows server, exiting"),
+                }
+            }
+            lifecycle::Died::TransportEnded => {
+                tracing::error!("mux connection to the server died, exiting");
+            }
+        }
         std::process::exit(1);
     });
 
