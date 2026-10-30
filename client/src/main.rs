@@ -291,11 +291,10 @@ fn run(
             };
 
         // Forwards the spawned server's own stderr into our own log sink, each line marked as the
-        // server's (see `log_sink::forward_server_lines`). This has to be wired up before the grace-period check below,
-        // not after: the server's own "pipe does not exist" diagnostic (see its `pipe::exists`
-        // check) is exactly the kind of message that arrives *during* that window, and unlike
-        // before `.stderr(Stdio::piped())` was introduced (when this was simply inherited from
-        // this process), nothing reads a piped stderr unless something explicitly does.
+        // server's (see `log_sink::forward_server_lines`). This has to be wired up before the
+        // grace-period check below, not after: the server's own "pipe does not exist" diagnostic
+        // (see its `pipe::exists` check) is exactly the kind of message that arrives *during*
+        // that window, and nothing reads a piped stderr unless something explicitly does.
         tokio::spawn(log_sink::forward_server_lines(
             server_stderr,
             log_sink.clone(),

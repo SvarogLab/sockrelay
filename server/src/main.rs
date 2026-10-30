@@ -16,8 +16,8 @@ async fn main() {
     // Must write to stderr, not the default stdout: this process's own stdout *is* the yamux
     // transport (joined with stdin below) — any tracing output on stdout would land in the
     // middle of the binary frame stream and corrupt it. Off a terminal, stderr is the client's
-    // pipe, and the client or the journal stamps each line, so the server's own time would only
-    // repeat it.
+    // pipe, which forwards each line without a timestamp; under systemd the journal adds one, so
+    // the server's own would only repeat it.
     let stderr_is_terminal = std::io::stderr().is_terminal();
     let subscriber = tracing_subscriber::fmt()
         .with_writer(std::io::stderr)
