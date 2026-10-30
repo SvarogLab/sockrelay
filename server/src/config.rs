@@ -1,10 +1,7 @@
 use clap::Parser;
 
-/// Every value here is a required CLI flag — deliberately **no defaults, no env var fallback**:
-/// this process refuses to start rather than silently guessing at a pipe path or timeout,
-/// matching this project's "fail fast and honest" design (see `pipe::connect`'s own doc comment
-/// on why the relay never hides a real problem behind an assumption). Not meant to be launched by
-/// a human directly — see the note below.
+/// Every flag is required, with no default: the client always passes them, and a server started
+/// any other way refuses to guess at a pipe path or timeout.
 #[derive(Parser, Debug)]
 #[command(
     about = "sockrelay Windows-side relay: bridges a yamux connection over stdio to the local ssh-agent named pipe.\n\nNot meant to be run directly by an end user — it is spawned by sockrelay-client, which passes every flag below explicitly and speaks the yamux protocol over this process's stdin/stdout."

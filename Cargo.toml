@@ -12,11 +12,10 @@ description = "Relays a Windows ssh-agent named pipe to a WSL/Linux unix socket 
 
 [workspace.dependencies]
 tokio = { version = "1.53", features = ["full"] }
-tokio-util = { version = "0.7.19", features = ["compat", "io"] }
+tokio-util = { version = "0.7.19", features = ["compat", "io", "rt"] }
 yamux = "0.14"
 tracing = "0.1.44"
 thiserror = "2.0.19"
-libc = "0.2.189"
 clap = { version = "4.6.4", features = ["derive"] }
 librelay = { git = "https://github.com/SvarogLab/librelay", tag = "v0.1.0", default-features = false }
 windows-sys = { version = "0.61.2", features = ["Win32_System_Pipes", "Win32_Foundation"] }

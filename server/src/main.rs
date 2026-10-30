@@ -1,24 +1,19 @@
 mod config;
 mod pipe;
-mod watchdog;
 
 use clap::Parser;
-use librelay::server::mux;
+use librelay::server::{log, mux};
 
 use config::Config;
 
 #[tokio::main]
 async fn main() {
     let config = Config::parse();
+    // stderr only: stdout carries the mux, and anything else written there would corrupt it.
+    log::init(&config.log);
 
-    // Logs to stderr, never the default stdout: this process's own stdout *is* the yamux
-    // transport (joined with stdin below), and any output there would corrupt the frame stream.
-    librelay::server::log::init(&config.log);
-
-    // Fails fast and loudly if the configured pipe doesn't exist at all (wrong `--pipe-path`, or
-    // the real agent isn't running), instead of only discovering that on the first real relayed
-    // connection — the client watches for this process dying shortly after spawn and treats it as
-    // a startup failure (see `client/src/main.rs`'s startup grace period).
+    // Checked at startup so a wrong `--pipe-path`, or no agent running, fails the start (the
+    // client's grace period catches the exit) rather than the first relayed connection.
     #[cfg(windows)]
     if !pipe::exists(&config.pipe_path) {
         tracing::error!(
@@ -29,46 +24,28 @@ async fn main() {
     }
 
     let stdio = tokio::io::join(tokio::io::stdin(), tokio::io::stdout());
-    let (mut acceptor, driver) = mux::server(stdio);
-    let driver_task = tokio::spawn(driver);
-
-    tokio::spawn(async move {
-        while let Some(stream) = acceptor.accept().await {
-            let pipe_path = config.pipe_path.clone();
+    let outcome = mux::serve(stdio, move |stream| {
+        let pipe_path = config.pipe_path.clone();
+        #[cfg(windows)]
+        let settings = config.pipe_settings();
+        async move {
             #[cfg(windows)]
-            let settings = config.pipe_settings();
-            tokio::spawn(async move {
-                #[cfg(windows)]
-                pipe::relay_stream(&pipe_path, stream, settings).await;
-                #[cfg(not(windows))]
-                {
-                    let _ = (pipe_path, stream);
-                }
-            });
+            pipe::relay_stream(&pipe_path, stream, settings).await;
+            #[cfg(not(windows))]
+            let _ = (pipe_path, stream);
         }
-    });
-
-    // The client side does not automatically kill this process when it dies, since WSL-spawned
-    // Windows processes are not tied to their spawning Linux process's lifetime — this watchdog
-    // is what actually notices and exits instead of lingering as an orphan. `std::process::exit`
-    // also closes every open named-pipe handle as an OS-level side effect, satisfying that
-    // requirement without a separate handle registry.
-    let result = watchdog::watch(driver_task, || {
-        tracing::info!("mux connection to the client ended, shutting down");
     })
     .await;
 
-    // Exit non-zero on a real error instead of always reporting success, so anything watching
-    // this process's exit code (a supervisor, a manual smoke test) can tell a clean shutdown
-    // (the client went away normally) apart from a genuine connection/protocol failure.
-    match result {
-        Ok(Ok(())) => std::process::exit(0),
-        Ok(Err(e)) => {
-            tracing::error!(error = %e, "mux driver ended with an error");
-            std::process::exit(1);
+    // The client is gone. Exiting — rather than waiting for relays still running — also closes
+    // every named-pipe handle they hold, so this process never outlives its client.
+    match outcome {
+        Ok(()) => {
+            tracing::info!("the client closed the connection, exiting");
+            std::process::exit(0);
         }
         Err(e) => {
-            tracing::error!(error = %e, "mux driver task panicked");
+            tracing::error!(error = %e, "the connection to the client failed, exiting");
             std::process::exit(1);
         }
     }

@@ -1,14 +1,19 @@
 [Unit]
 Description=Relay from the Windows OpenSSH agent pipe to a unix socket
+# The relay never binds a socket itself; it only serves the one systemd passes.
+Requires=sockrelay.socket
+After=sockrelay.socket
 
 [Service]
 Type=notify
-# Takes the socket from sockrelay.socket when that is enabled, binds ~/.ssh/agent.sock itself
-# otherwise.
 ExecStart=@BINDIR@/sockrelay-client
 Restart=on-failure
 # Without a pause, an agent that isn't running uses up the start limit within a second.
 RestartSec=2
+# A stop signals only the client, which closes the link and waits for the server to exit on its
+# own; signalling the whole group would kill the server mid-request. Whatever is left once the
+# client exits is still killed.
+KillMode=mixed
 
 [Install]
 WantedBy=default.target
