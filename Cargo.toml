@@ -12,15 +12,13 @@ description = "Relays a Windows ssh-agent named pipe to a WSL/Linux unix socket 
 
 [workspace.dependencies]
 tokio = { version = "1.54.1", features = ["full"] }
-tokio-util = { version = "0.7.20", features = ["compat", "io"] }
+tokio-util = { version = "0.7.20", features = ["compat", "io", "rt"] }
 yamux = "0.14.1"
 tracing = "0.1.44"
-tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
 thiserror = "2.0.21"
-futures = "0.3.34"
-libc = "0.2.191"
 clap = { version = "4.6.7", features = ["derive"] }
-sd-notify = "0.5.0"
+libc = "0.2.191"
+librelay = { git = "https://github.com/SvarogLab/librelay", tag = "v0.1.0", default-features = false }
 windows-sys = { version = "0.61.2", features = ["Win32_System_Pipes", "Win32_Foundation"] }
 rand = "0.10.3"
 
