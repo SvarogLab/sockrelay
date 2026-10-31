@@ -1,0 +1,10 @@
+[Unit]
+Description=ssh-agent socket backed by the Windows OpenSSH agent
+
+[Socket]
+ListenStream=%h/.ssh/agent.sock
+SocketMode=0600
+DirectoryMode=0700
+
+[Install]
+WantedBy=sockets.target

@@ -1,13 +1,17 @@
 #!/bin/sh
-# Builds both sockrelay binaries and installs them into /usr/local/bin. Does not touch
-# ~/.profile (or any other shell config) or any already-running agent bridge — it just prints
-# what to add, and leaves wiring it up to you. Safe to re-run any time to rebuild and reinstall.
+# Builds both sockrelay binaries and installs them into /usr/local/bin, and the systemd user units
+# into the user unit directory, then stops any server still running and restarts sockrelay.service
+# if it was running; enables nothing, and doesn't touch ~/.profile (or any other shell config) or
+# any other agent bridge — it prints the steps that are left. Safe to re-run to rebuild and
+# reinstall.
 set -eu
 
 REPO_DIR="$(cd "$(dirname "$0")" && pwd)"
 SOCKET_PATH="$HOME/.ssh/agent.sock"
-CLIENT_BIN="/usr/local/bin/sockrelay-client"
-SERVER_BIN="/usr/local/bin/sockrelay-server.exe"
+BIN_DIR="/usr/local/bin"
+CLIENT_BIN="$BIN_DIR/sockrelay-client"
+SERVER_BIN="$BIN_DIR/sockrelay-server.exe"
+UNIT_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user"
 
 # The Windows target must match the *host's* real CPU architecture, not just default to aarch64:
 # WSL's binfmt interop runs the cross-compiled .exe natively (no Wine/emulation) only because it's
@@ -31,34 +35,55 @@ echo "==> Building sockrelay-client (release)"
 echo "==> Building sockrelay-server (release, $WIN_TARGET)"
 (cd "$REPO_DIR" && cargo xwin build --release -p sockrelay-server --target "$WIN_TARGET")
 
-echo "==> Installing binaries into /usr/local/bin (sudo)"
+echo "==> Installing binaries into $BIN_DIR (sudo)"
 sudo install -m 755 "$REPO_DIR/target/release/sockrelay-client" "$CLIENT_BIN"
 sudo install -m 755 "$REPO_DIR/target/$WIN_TARGET/release/sockrelay-server.exe" "$SERVER_BIN"
+
+echo "==> Installing the systemd user units into $UNIT_DIR"
+mkdir -p "$UNIT_DIR"
+cp "$REPO_DIR/contrib/sockrelay.socket" "$UNIT_DIR/sockrelay.socket"
+sed "s|@BINDIR@|$BIN_DIR|g" "$REPO_DIR/contrib/sockrelay.service" > "$UNIT_DIR/sockrelay.service"
+
+# Windows keeps running the image of an .exe it already has open, even once the file under it is
+# replaced, so every server still running, the service's or one left over, is stopped only now
+# that the new files are in: a connection that starts the service meanwhile gets the new ones.
+WAS_ACTIVE=no
+if systemctl --user show-environment >/dev/null 2>&1; then
+    systemctl --user daemon-reload
+    if systemctl --user is-active --quiet sockrelay.service; then
+        WAS_ACTIVE=yes
+        systemctl --user stop sockrelay.service
+    fi
+fi
+pkill -f "^/init $SERVER_BIN" || true
+if [ "$WAS_ACTIVE" = yes ]; then
+    echo "==> Starting sockrelay.service again on the new binaries"
+    systemctl --user start sockrelay.service
+fi
 
 cat <<EOF
 
 ==> Installed:
     $CLIENT_BIN
     $SERVER_BIN
+    $UNIT_DIR/sockrelay.socket
+    $UNIT_DIR/sockrelay.service
 
-To use sockrelay instead of whatever currently provides your ssh-agent socket:
+sockrelay runs under systemd, which needs systemd running in WSL (systemd=true under [boot] in
+/etc/wsl.conf). To use it instead of whatever currently provides your ssh-agent socket:
 
 1. Stop whatever is currently listening on $SOCKET_PATH, if anything (e.g. an old
    socat+npiperelay bridge). Check with:
-       ps aux | grep -i "socat\|npiperelay"
+       ps aux | grep -i "socat\|npiperelay\|sockrelay"
 
-2. In whatever starts your ssh-agent bridge today (~/.profile, ~/.bashrc, etc.), comment out
-   that old invocation.
+2. In whatever starts that bridge today (~/.profile, ~/.bashrc, etc.), remove that invocation and
+   only point SSH at the socket:
 
-3. Add this in its place:
+       export SSH_AUTH_SOCK="$SOCKET_PATH"
 
-       $CLIENT_BIN && export SSH_AUTH_SOCK="$SOCKET_PATH"
+3. Let systemd own the socket and start the relay on the first connection:
 
-   $CLIENT_BIN needs no flags in the common case (every setting defaults sensibly — see the
-   README's Configuration section). It daemonizes itself, prints its own diagnostics to stderr
-   on a genuine failure (nothing at all if an instance was already running — only a fresh start
-   prints anything), and returns a real exit code — so \$SSH_AUTH_SOCK only gets set once it's
-   confirmed there's actually something listening behind it.
+       systemctl --user enable --now sockrelay.socket
 
 4. Open a new login shell (or re-source whichever file you edited) to pick it up.
 EOF

@@ -14,13 +14,14 @@ path = "src/main.rs"
 [dependencies]
 tokio = { workspace = true }
 tokio-util = { workspace = true }
-yamux = { workspace = true }
 tracing = { workspace = true }
-tracing-subscriber = { workspace = true }
 thiserror = { workspace = true }
-futures = { workspace = true }
-libc = { workspace = true }
 clap = { workspace = true }
+libc = { workspace = true }
+librelay = { workspace = true, features = ["client"] }
 
 [dev-dependencies]
-tempfile = "3"
+tempfile = "3.27.0"
+
+[lints]
+workspace = true

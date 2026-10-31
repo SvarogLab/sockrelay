@@ -1,183 +1,139 @@
 # sockrelay
 
-`sockrelay` is a Rust two-binary system that relays a Windows named pipe to a unix domain socket on
-the WSL/Linux side, over a single multiplexed connection. It's a generic, protocol-agnostic byte
-relay, not an ssh-agent-specific proxy — but it was built for, and so far only tested against, the
-real Windows OpenSSH `ssh-agent` pipe, which is the use case the rest of this README describes.
+`sockrelay` relays a Windows named pipe to a unix socket on the WSL side: the real Windows OpenSSH
+`ssh-agent` pipe, for Linux `ssh`. It relays raw bytes and parses nothing, but it has only been
+built and tested for `ssh-agent`, which is what this README describes.
 
-It replaces the classic `socat` + `npiperelay.exe` bridge, which spawns a brand-new Windows-side
-process for every single connection. Under parallel SSH usage (e.g. Ansible forking many
-concurrent SSH connections), concurrent Windows process spawning from WSL2 hits a real,
-documented WSL2 interop bug ([microsoft/WSL #7371](https://github.com/microsoft/WSL/issues/7371),
+It replaces the `socat` + `npiperelay.exe` bridge, which starts a Windows process per connection.
+Under parallel SSH (Ansible forking many connections) starting Windows processes concurrently from
+WSL hits an interop bug ([microsoft/WSL #7371](https://github.com/microsoft/WSL/issues/7371),
 [#6891](https://github.com/microsoft/WSL/issues/6891),
-[#53250](https://github.com/microsoft/WSL/issues/53250)) and starts failing with
-"communication with agent failed". `sockrelay` spawns the Windows-side process exactly **once**
-and multiplexes every subsequent connection over it, so the bug's trigger condition never occurs.
-
-See [BENCHMARKS.md](BENCHMARKS.md) for a head-to-head load-test comparison against the old bridge,
-including the old bridge's failure caught live in the same run.
+[#53250](https://github.com/microsoft/WSL/issues/53250)) and fails with "communication with agent
+failed". `sockrelay` starts its Windows process once and carries every connection over it.
+[BENCHMARKS.md](BENCHMARKS.md) compares the two under load, the old bridge's failure included.
 
 ## Architecture
 
-- **`sockrelay-client`** (WSL/Linux) daemonizes (forks, detaches from the controlling terminal —
-  see [Running](#running) below), then listens on a unix domain socket. On startup it spawns
-  **`sockrelay-server`** exactly once, over an anonymous pipe (the spawned process's own
-  stdin/stdout), and multiplexes every accepted unix connection over that single connection using
-  [`yamux`](https://docs.rs/yamux). If the connection to the server ever dies, the daemon exits
-  rather than silently retrying or respawning — a supervisor (e.g. systemd) is expected to restart
-  it, same as it would restart any other crashed daemon.
-- **`sockrelay-server`** (Windows, cross-compiled and run via WSL binfmt interop — see
-  [Building](#building) below) accepts yamux streams from the client and relays each one to a
-  fresh handle on the real `ssh-agent` named pipe.
+- **`sockrelay-client`** (Linux) runs as a systemd user service on the unix socket systemd passes
+  it (see [Running](#running)). It starts **`sockrelay-server`** once and carries each accepted
+  connection over its own stream of one [`yamux`](https://docs.rs/yamux) connection over the
+  server's stdin and stdout. If that link is lost the client exits, and systemd restarts it.
+- **`sockrelay-server`** (Windows, cross-compiled; WSL runs it natively) relays each stream to a
+  fresh handle on the `ssh-agent` pipe. It exits as soon as the client is gone, so it never
+  outlives it.
 
-Just two crates — an earlier `sockrelay-common` (shared mux error types and a byte-relay helper)
-was folded back in once one of its two pieces turned out to be single-consumer: `MuxError` is now
-duplicated verbatim in both `client::mux` and `server::mux` (identical, 9 lines, cheaper to keep in
-sync by hand than to maintain a whole extra crate for), and the byte-relay helper moved into
-`client::relay`, its only remaining caller.
+Starting the server, the yamux connection, watching both ends, logging and systemd integration come
+from [`librelay`](https://github.com/SvarogLab/librelay), shared with
+[`credrelay`](https://github.com/SvarogLab/credrelay), a relay of the same shape for the Windows
+Credential Manager. What is left here is the relay: the socket on one side, the pipe on the other.
 
-A separate load-testing tool used during this project's own development to measure behavior under
-concurrent load against the real agent lives in its own repository,
-[`sockrelay-loadtest`](https://github.com/ffaxl/tools-sockrelay-loadtest) — it isn't part of this
-workspace, since it has no dependency on any of the crates above.
+Windows named pipes have no half-close, so the server's relay ends a connection as soon as either
+direction does, rather than waiting for both as `tokio::io::copy_bidirectional` does on the unix
+side.
 
-Neither `sockrelay-client` nor `sockrelay-server` parses the bytes flowing through them — no
-framing, no message boundaries, nothing that assumes ssh-agent's wire format; both just relay raw
-bytes between a unix socket and a named pipe in both directions. The one relay-shape decision that
-was informed by real ssh-agent behavior (racing both copy directions and closing on whichever ends
-first, instead of `tokio::io::copy_bidirectional`'s wait-for-both-sides-to-half-close) is actually a
-fix for a property of Windows named pipes in general — they have no real half-close — not anything
-ssh-specific, so it holds for any protocol relayed the same way.
+A load-testing tool used while developing this lives in its own repository,
+[`sockrelay-loadtest`](https://github.com/ffaxl/tools-sockrelay-loadtest).
 
 ## Configuration
 
-`sockrelay-client` is the one a human actually invokes (typically from a shell profile), so every
-one of its flags has a sensible default and running it completely bare — no flags at all — works
-in the common case. `sockrelay-server` is different: it's spawned by `sockrelay-client`, not
-launched directly by a human, so every one of its flags is **required** with no default at all —
-it refuses to start rather than silently guessing at a pipe path or timeout.
-
 ### `sockrelay-client`
+
+Every flag has a default, so the systemd unit runs it bare:
 
 ```text
 sockrelay-client
-  --socket <PATH>                        default: ~/.ssh/agent.sock
-  --server-exe <PATH>                     default: "sockrelay-server.exe", searched via PATH
-  --socket-mode <OCTAL>                   default: 600
-  --accept-error-backoff-ms <MS>          default: 100
-  --log-file <PATH>                       default: unset (no file written) — see Logging below
-  --foreground                            default: off — see Running below
-  --pipe-path <PATH>                      default: \\.\pipe\openssh-ssh-agent — forwarded to the spawned server
-  --connect-timeout-secs <N>              default: 5 — forwarded to the spawned server
-  --jitter-max-ms <MS>                    default: 50 — forwarded to the spawned server
+  --server-exe <PATH>                default: sockrelay-server.exe, searched in PATH
+  --accept-error-backoff-ms <MS>     default: 100
+  --pipe-path <PATH>                 default: \\.\pipe\openssh-ssh-agent   (passed to the server)
+  --connect-timeout-secs <N>         default: 5                           (passed to the server)
+  --jitter-max-ms <MS>               default: 50                          (passed to the server)
 ```
 
-```sh
-sockrelay-client
-```
-
-is enough once `sockrelay-server.exe` is on `PATH` (e.g. after `install.sh` puts it in
-`/usr/local/bin`) — every flag above can still be overridden explicitly, e.g.:
-
-```sh
-sockrelay-client --socket ~/.ssh/agent.sock --server-exe /path/to/sockrelay-server.exe \
-  --socket-mode 600 --pipe-path '\\.\pipe\openssh-ssh-agent'
-```
-
-The last three flags (`--pipe-path`, `--connect-timeout-secs`, `--jitter-max-ms`) have no effect
-on `sockrelay-client` itself — they're read here only to be forwarded as CLI arguments to the
-spawned `sockrelay-server.exe`. This is deliberate, not redundant: environment variables set on
-`sockrelay-client` do **not** cross the WSL binfmt-interop boundary into the spawned Windows
-process (confirmed empirically), so argv is the only channel that reliably reaches it.
+The socket's path and mode belong to `sockrelay.socket`, not to a flag. The last three flags only
+pass through to the server as arguments: environment variables don't cross the WSL interop
+boundary into a Windows process.
 
 ### `sockrelay-server`
 
-Not meant to be run directly by an end user — it is spawned by `sockrelay-client`, which passes
-every flag explicitly (and its own `--help` text says as much). Useful for manual testing against
-a real agent, though — every flag below is required, with no default:
+Started by `sockrelay-client`, which passes every flag; every flag is required, so it never guesses.
+By hand, against a real agent:
 
 ```powershell
-sockrelay-server.exe \
-  --pipe-path '\\.\pipe\openssh-ssh-agent' \
-  --connect-timeout-secs 5 \
-  --jitter-max-ms 50
+sockrelay-server.exe --pipe-path '\\.\pipe\openssh-ssh-agent' --connect-timeout-secs 5 `
+  --jitter-max-ms 50 --log-filter info
 ```
 
-- `--connect-timeout-secs` bounds how long a connection attempt will wait for a saturated agent
-  before giving up, once it hits `ERROR_PIPE_BUSY`.
-- `--jitter-max-ms` is the random delay slept between busy-retry attempts, which exists to break a
-  thundering herd: multiple waiters woken by the same freed pipe instance would otherwise all
-  retry in the same instant, and only one could win.
+- `--connect-timeout-secs` bounds how long a connection waits for a saturated agent once the pipe
+  answers `ERROR_PIPE_BUSY`.
+- `--jitter-max-ms` is the random pause between busy retries, so waiters woken by the same freed
+  pipe instance don't all retry at once.
+- `--log-filter` is the server's `tracing` filter (see [Logging](#logging)).
 
 ## Running
 
-`sockrelay-client` daemonizes itself: it forks, detaches from the controlling terminal (`setsid`),
-and only returns control to whoever invoked it once startup has a known outcome — so it's safe to
-invoke synchronously from a shell profile, without a trailing `&`, and without hanging the shell
-startup. Pass `--foreground` to skip all of that — no fork, no detaching — when a process
-supervisor (systemd, a container entrypoint) already expects to own this process directly, or for
-interactive debugging; the exit code is then just this process's own, since there's no separate
-daemon to report an outcome back from.
+`sockrelay` runs under systemd, which needs systemd running in WSL (`systemd=true` under `[boot]`
+in `/etc/wsl.conf`). `install.sh` installs two user units into `$XDG_CONFIG_HOME/systemd/user`
+(`~/.config/systemd/user` by default):
 
-"A known outcome" means more than just "the socket bind and spawn succeeded": `sockrelay-server`
-checks, at startup, whether the configured `--pipe-path` actually exists (a fast, non-blocking
-check — it doesn't wait around for a busy agent, just confirms *some* agent is listening under
-that name) and exits immediately if not. `sockrelay-client` gives the spawned server a short grace
-period (500ms) to prove it's still alive before declaring success, specifically to catch that
-failure — a misconfigured `--pipe-path`, or the real agent not running at all — rather than only
-discovering it on the first real connection, potentially much later.
-
-Exit codes reflect the real outcome:
-
-- **`0`** — either started fresh (prints `sockrelay-client: started` to stderr) or an instance was
-  already running for that socket (prints nothing — this is the ordinary case on every subsequent
-  shell login, not worth announcing every time). Both mean "the agent is up" to the caller.
-- **non-zero** — a genuine startup failure (couldn't bind the socket for a real reason, couldn't
-  spawn the Windows server, the server exited immediately — e.g. the configured pipe doesn't
-  exist). Diagnostics are printed to stderr by the binary itself, since output isn't redirected
-  until *after* a successful start — no shell-level `|| echo ...` needed to surface a failure.
+- **`sockrelay.socket`** binds `~/.ssh/agent.sock` (mode `0600`) and starts the service on the
+  first connection. It stays open while the service restarts, so a connection made meanwhile waits
+  instead of being refused.
+- **`sockrelay.service`** runs `sockrelay-client` as `Type=notify` on that socket, and restarts it
+  2 seconds after a failure.
 
 ```sh
-sockrelay-client
-echo "started ok: $?"
+systemctl --user enable --now sockrelay.socket
 ```
 
-A shell-profile invocation only needs to export `SSH_AUTH_SOCK` once startup is confirmed —
-`&&` is enough, since a failure already prints its own diagnostics and a non-zero exit code:
+starts the relay on demand; enabling `sockrelay.service` too starts it with the session. The shell
+profile only points SSH at the socket:
 
 ```sh
-sockrelay-client && export SSH_AUTH_SOCK=~/.ssh/agent.sock
+export SSH_AUTH_SOCK=~/.ssh/agent.sock
+```
+
+systemd hears the service is ready only once the relay is known to work. `sockrelay-server` exits at
+once if `--pipe-path` names no running agent, and `sockrelay-client` waits 500ms for the server to
+prove it stays up, so a wrong pipe or a stopped agent fails the start rather than the first
+connection. Any startup failure exits non-zero with its reason in the journal.
+
+`systemctl --user stop sockrelay` stops gracefully, even while the service is still starting: the
+client stops accepting, gives connections in flight up to 5 seconds, closes the link, and the
+server exits on its own. A server still running 5 seconds later fails the stop, and systemd kills
+it.
+
+The client also exits non-zero, for systemd to restart it, if the socket it was passed stops
+accepting connections for good; a transient `accept()` failure, such as running out of file
+descriptors, is retried after `--accept-error-backoff-ms`.
+
+For debugging, with the units stopped, `systemd-socket-activate` passes a socket the way the unit
+does:
+
+```sh
+RUST_LOG=debug systemd-socket-activate -l "$XDG_RUNTIME_DIR/sockrelay-debug.sock" sockrelay-client
 ```
 
 ## Logging
 
-`--log-file`, unset by default, controls where timestamped diagnostics *also* end up once
-daemonized — both `sockrelay-client`'s own, and the spawned `sockrelay-server`'s (its stderr is
-piped and forwarded verbatim into the same sink, since it has no concept of a log file, or of this
-process's `--log-file`, at all — it just writes to its own stderr exactly as if run directly). If
-`--log-file` isn't given, no file is ever opened — there's no implicit fallback path standing in
-for "no file".
-
-Whether a diagnostic *also* reaches stderr is a fully independent question from `--log-file`,
-governed by daemonization rather than by the flag: before a successful start, it always does — this
-is what lets a startup failure surface immediately to whoever ran the command (see
-[Running](#running) above) — and after a successful *daemonized* start, it stops, since
-`detach_stdio` releases the terminal at that point anyway. With `--foreground`, there's no
-detaching at all, so output keeps reaching stderr (and `--log-file`, if given) for as long as the
-process runs — the natural behavior for something a supervisor or an interactive user is watching
-directly.
+Both processes log to the client's stderr, which systemd sends to the journal:
 
 ```sh
-sockrelay-client --log-file ~/.cache/sockrelay/client.log
+journalctl --user -u sockrelay
 ```
+
+- The filter is `RUST_LOG`, `info` when unset or empty; set it for the service with
+  `systemctl --user edit sockrelay.service` and `Environment=RUST_LOG=debug` under `[Service]`. An
+  invalid one stops the client before it starts anything.
+- The client passes the same filter to the server as `--log-filter`.
+- Each line the server writes is forwarded with a `server:` prefix followed by a space.
+- On a terminal, both processes color and timestamp their lines. In the journal, which timestamps
+  every line itself, neither adds a timestamp or color.
 
 ## Building
 
-The Windows side is cross-compiled for `aarch64-pc-windows-msvc` using
-[`cargo-xwin`](https://github.com/rust-cross/cargo-xwin) — WSL's own binfmt interop executes the
-cross-compiled `.exe` **natively** (no Wine/emulation, since it's the same CPU architecture), which
-is what lets this whole system run entirely from a WSL shell without ever touching a separate
-Windows session.
+The server is cross-compiled for the host's own architecture with
+[`cargo-xwin`](https://github.com/rust-cross/cargo-xwin); WSL then runs the `.exe` natively, with no
+emulation:
 
 ```sh
 rustup target add aarch64-pc-windows-msvc
@@ -187,10 +143,11 @@ cargo build -p sockrelay-client
 cargo xwin build -p sockrelay-server --target aarch64-pc-windows-msvc
 ```
 
-`install.sh` automates this (detecting the host's real CPU architecture rather than assuming
-`aarch64`) and installs both release binaries into `/usr/local/bin`. It doesn't touch any shell
-config or stop any currently-running agent bridge — it only prints what to add and where, leaving
-the actual wiring-up to you:
+`install.sh` does this for the host's architecture and installs both release binaries into
+`/usr/local/bin` and the units. Windows keeps running an `.exe` it already has open even after the
+file is replaced, so once the new files are in, it stops the service and any server left running,
+and starts the service again if it was running. It enables nothing and touches no shell config; it
+prints the remaining steps:
 
 ```sh
 ./install.sh
@@ -201,7 +158,9 @@ the actual wiring-up to you:
 Each [release](https://github.com/SvarogLab/sockrelay/releases) carries the client for Linux
 (`sockrelay-client-linux-amd64`, `sockrelay-client-linux-arm64`, static musl builds) and the server
 for Windows (`sockrelay-server-windows-amd64.exe`, `sockrelay-server-windows-arm64.exe`), with
-their checksums in `SHA256SUMS`. Each is built and tested on its own architecture's runner.
+their checksums in `SHA256SUMS`. Install them as `sockrelay-client` and `sockrelay-server.exe` on
+`PATH`, then copy `contrib/sockrelay.socket` and `contrib/sockrelay.service` where `install.sh` puts
+them, replacing `@BINDIR@` with the directory holding `sockrelay-client`.
 
 ### Releasing
 
@@ -213,37 +172,34 @@ merging it tags the commit and publishes the release.
 
 ```sh
 cargo test --workspace
-cargo clippy --workspace --all-targets
+cargo clippy --workspace --all-targets --all-features -- -D warnings
 ```
 
-`server/src/pipe.rs` is gated on `#![cfg(windows)]`, so the host build above only compiles an
-empty module for it — its real logic and tests only build for the Windows target:
+`client/tests/stop.rs` runs the built client under `systemd-socket-activate` (from the `systemd`
+package) against a stand-in server script, so it needs that tool on `PATH`.
+
+The server's pipe code only builds for Windows. Its tests run there, cross-compiled; WSL runs the
+test binary natively:
 
 ```sh
 eval "$(cargo xwin env --target aarch64-pc-windows-msvc)"
 unset CARGO_TARGET_AARCH64_PC_WINDOWS_MSVC_RUNNER
 cargo test -p sockrelay-server --target aarch64-pc-windows-msvc
-cargo clippy -p sockrelay-server --all-targets --target aarch64-pc-windows-msvc
+cargo clippy -p sockrelay-server --all-targets --target aarch64-pc-windows-msvc -- -D warnings
 ```
 
-(`cargo xwin test`/`cargo xwin run` set `CARGO_TARGET_AARCH64_PC_WINDOWS_MSVC_RUNNER=wine`, which
-isn't installed or needed here — WSL interop already runs the binary directly — so the runner
-variable is explicitly unset before falling back to plain `cargo test`/`cargo build`.)
-
-`cargo clippy --workspace --all-targets --target aarch64-pc-windows-msvc` is **not** meaningful:
-`sockrelay-client` is unix-only code with no Windows-compat shims, so cross-compiling the whole
-workspace for Windows fails on unrelated errors in that crate. Only `-p sockrelay-server` is a
-valid Windows-target build.
+(`cargo xwin env` sets the target's runner to `wine`, which isn't needed here, so it is unset.) The
+client is unix-only, so only `-p sockrelay-server` builds for Windows.
 
 ## Security notes
 
-- The unix socket is created with the process umask temporarily restricted so its permission bits
-  come out as exactly `--socket-mode`, with no bind-then-`chmod` window where it briefly exists
-  with looser permissions.
-- A startup-only file lock guards against two instances racing to reclaim the same stale socket
-  path left behind by an unclean previous exit.
-- The relay never retries or respawns past its initial cold start: if the connection to the
-  spawned Windows process dies, the daemon exits rather than masking the failure. A supervisor
-  (systemd, a process manager) is expected to restart it, the same as any other crashed daemon.
-- A busy/saturated agent produces an honest, bounded failure (`--connect-timeout-secs`) rather
-  than an unbounded hang or a silently retried request.
+- systemd creates the socket with `SocketMode=0600` from `sockrelay.socket`, before the client runs.
+- The relay never retries or respawns: if the link to the server is lost the client exits rather
+  than masking it, and systemd restarts it.
+- A saturated agent produces a bounded failure (`--connect-timeout-secs`) rather than a hang or a
+  silently retried request.
+
+## License
+
+Licensed under either of [Apache License, Version 2.0](LICENSE-APACHE) or [MIT license](LICENSE-MIT)
+at your option.
