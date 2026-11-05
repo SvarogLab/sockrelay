@@ -30,16 +30,14 @@ pub enum PipeError {
 
 /// Blocks until `path` has a free instance, or the wait times out. `NMPWAIT_USE_DEFAULT_WAIT` takes
 /// the timeout the agent set when it created the pipe instead of inventing one.
-fn wait_for_free_instance(path: &str) -> io::Result<()> {
+///
+/// Which of the two it was doesn't matter: another waiter may take a freed instance first, so only
+/// the next open can tell.
+fn wait_for_free_instance(path: &str) {
     let wide_path = wide(path);
     // SAFETY: `wide_path` is a valid null-terminated UTF-16 string live for the duration of this
     // call; `WaitNamedPipeW` reads it but does not retain the pointer past returning.
-    let succeeded = unsafe { WaitNamedPipeW(wide_path.as_ptr(), NMPWAIT_USE_DEFAULT_WAIT) };
-    if succeeded == 0 {
-        Err(io::Error::last_os_error())
-    } else {
-        Ok(())
-    }
+    unsafe { WaitNamedPipeW(wide_path.as_ptr(), NMPWAIT_USE_DEFAULT_WAIT) };
 }
 
 /// Whether a pipe exists at `path` at all, free or not, without waiting. With `NMPWAIT_NOWAIT` a
@@ -96,12 +94,9 @@ async fn open_when_free(path: &str, jitter_max_ms: u64) -> io::Result<NamedPipeC
         match ClientOptions::new().open(path) {
             Err(e) if is_os_error(&e, ERROR_PIPE_BUSY) => {
                 let wait_path = path.to_string();
-                let waited =
-                    tokio::task::spawn_blocking(move || wait_for_free_instance(&wait_path))
-                        .await
-                        .map_err(io::Error::other)?;
-                // Whether the wait saw a free instance or timed out, the next open decides.
-                let _ = waited;
+                tokio::task::spawn_blocking(move || wait_for_free_instance(&wait_path))
+                    .await
+                    .map_err(io::Error::other)?;
                 let jitter = Duration::from_millis(rand::random_range(0..=jitter_max_ms));
                 tokio::time::sleep(jitter).await;
             }
@@ -225,7 +220,10 @@ mod tests {
     async fn connect_fails_for_a_nonexistent_pipe() {
         let path = unique_pipe_path("does-not-exist");
         match connect(&path, SETTINGS).await {
-            Err(PipeError::Connect { .. }) => {}
+            Err(PipeError::Connect { source, .. }) => assert!(
+                is_os_error(&source, ERROR_FILE_NOT_FOUND),
+                "failed for another reason than the missing pipe: {source}"
+            ),
             Ok(_) => panic!("expected connecting to a nonexistent pipe to fail"),
         }
     }
