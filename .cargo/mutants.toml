@@ -1,0 +1,12 @@
+# Inside the build directory, which is ignored already.
+output = "target"
+
+# Mutants no test can tell from the real code, each with the reason.
+exclude_re = [
+    # The server has a second `main`, for every OS but Windows, that only says the server runs on
+    # Windows; the server's mutants run on Windows, where it isn't built. The Windows `main` is
+    # held by server/tests/server.rs either way.
+    "server/src/main\\.rs:.*: replace main with \\(\\)",
+    # The wait only paces the retries of a busy pipe: skipped, the next open still decides.
+    "replace wait_for_free_instance with \\(\\)",
+]

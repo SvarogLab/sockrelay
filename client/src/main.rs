@@ -359,4 +359,34 @@ mod tests {
             .expect("accepting kept retrying an error that can't go away");
         assert_eq!(ended.raw_os_error(), Some(libc::EINVAL));
     }
+
+    #[test]
+    fn only_errors_from_the_socket_itself_end_accepting() {
+        for errno in [libc::EBADF, libc::EINVAL, libc::ENOTSOCK, libc::EOPNOTSUPP] {
+            assert!(
+                socket_is_unusable(&io::Error::from_raw_os_error(errno)),
+                "{errno}"
+            );
+        }
+        for errno in [
+            libc::EMFILE,
+            libc::ENFILE,
+            libc::ECONNABORTED,
+            libc::ENOBUFS,
+        ] {
+            assert!(
+                !socket_is_unusable(&io::Error::from_raw_os_error(errno)),
+                "{errno}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_stop_signal_that_cannot_be_watched_fails_the_relay() {
+        assert_eq!(stopped(Ok(()), "stopping"), ExitCode::SUCCESS);
+        assert_eq!(
+            stopped(Err(io::Error::other("no handler")), "stopping"),
+            ExitCode::FAILURE
+        );
+    }
 }
