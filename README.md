@@ -3,18 +3,16 @@
 `sockrelay` relays a Windows named pipe to a unix socket on the WSL side, so a Linux program can
 talk to a Windows service listening on that pipe. It relays raw bytes both ways and parses nothing,
 and the pipe is `--pipe-path`. It starts its Windows process once and carries every connection over
-it, where a `socat` + `npiperelay.exe` bridge starts a Windows process per connection; starting
-Windows processes concurrently from WSL hits an interop bug
-([microsoft/WSL #7371](https://github.com/microsoft/WSL/issues/7371),
-[#6891](https://github.com/microsoft/WSL/issues/6891),
-[#53250](https://github.com/microsoft/WSL/issues/53250)).
+it, where a `socat` + `npiperelay.exe` bridge starts a Windows process per connection, and each of
+those tries to open the pipe once: when every pipe instance is busy, the connection just fails.
 
 ## Example: `ssh-agent`
 
 The shipped units, `install.sh` and the rest of this README relay the Windows OpenSSH `ssh-agent`
 pipe for Linux `ssh`, the pipe `sockrelay` has been tested against. Under parallel SSH (Ansible
-forking many connections) the per-connection bridge fails with "communication with agent failed";
-[BENCHMARKS.md](BENCHMARKS.md) compares the two under load, the old bridge's failure included.
+forking many connections) that bridge fails with "communication with agent failed";
+[BENCHMARKS.md](BENCHMARKS.md) compares the two under load and traces each of those failures to a
+busy pipe.
 
 ## Architecture
 
