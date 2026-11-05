@@ -24,8 +24,9 @@ use config::Config;
 use socket::SocketError;
 
 /// How long the server gets to prove it stays up before systemd hears the service is ready. The
-/// failure this catches — `sockrelay-server` exiting at once because `--pipe-path` names no running
-/// agent — shows within milliseconds, and the wait is paid on every start, so it stays short.
+/// failure this catches — `sockrelay-server` exiting at once because `--pipe-path` names no
+/// existing pipe — shows within milliseconds, and the wait is paid on every start, so it stays
+/// short.
 const STARTUP_GRACE_PERIOD: Duration = Duration::from_millis(500);
 
 /// Bounds both halves of a graceful stop: the wait for connections in flight, and then the wait
@@ -145,8 +146,8 @@ async fn start_link(
         Err(e) => {
             tracing::error!(
                 error = %e,
-                "failed to start the windows server — check --pipe-path and that the real agent \
-                 is running"
+                "failed to start the windows server — check --pipe-path and that the service \
+                 behind it is running"
             );
             ControlFlow::Break(ExitCode::FAILURE)
         }

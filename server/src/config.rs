@@ -4,14 +4,14 @@ use clap::Parser;
 /// any other way refuses to guess at a pipe path or timeout.
 #[derive(Parser, Debug)]
 #[command(
-    about = "sockrelay Windows-side relay: bridges a yamux connection over stdio to the local ssh-agent named pipe.\n\nNot meant to be run directly by an end user — it is spawned by sockrelay-client, which passes every flag below explicitly and speaks the yamux protocol over this process's stdin/stdout."
+    about = "sockrelay Windows-side relay: bridges a yamux connection over stdio to a local named pipe.\n\nNot meant to be run directly by an end user — it is spawned by sockrelay-client, which passes every flag below explicitly and speaks the yamux protocol over this process's stdin/stdout."
 )]
 pub struct Config {
-    /// Named pipe path for the local ssh-agent, e.g. `\\.\pipe\openssh-ssh-agent`.
+    /// Named pipe to relay, e.g. `\\.\pipe\openssh-ssh-agent` for ssh-agent.
     #[arg(long)]
     pub pipe_path: String,
 
-    /// Overall budget for the busy-wait loop when the agent's pipe is saturated, in seconds — see
+    /// Overall budget for the busy-wait loop when the pipe is saturated, in seconds — see
     /// `pipe::connect`.
     #[arg(long)]
     pub connect_timeout_secs: u64,
