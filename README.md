@@ -1,12 +1,17 @@
 # sockrelay
 
-`sockrelay` relays a Windows named pipe to a unix socket on the WSL side: the real Windows OpenSSH
-`ssh-agent` pipe, for Linux `ssh`. It relays raw bytes and parses nothing, but it has only been
-built and tested for `ssh-agent`, which is what this README describes.
+`sockrelay` relays a Windows named pipe to a unix socket on the WSL side, so a Linux program can
+talk to a Windows service listening on that pipe. It relays raw bytes both ways and parses nothing,
+so the protocol on the pipe is the two ends' business.
 
-It replaces the `socat` + `npiperelay.exe` bridge, which starts a Windows process per connection.
-Under parallel SSH (Ansible forking many connections) starting Windows processes concurrently from
-WSL hits an interop bug ([microsoft/WSL #7371](https://github.com/microsoft/WSL/issues/7371),
+Its main use, and what the shipped units and `install.sh` set up, is the Windows OpenSSH
+`ssh-agent` pipe for Linux `ssh`; it is also the only peer it has been tested against under load.
+[Relaying another pipe](#relaying-another-pipe) covers anything else.
+
+For `ssh-agent` it replaces the `socat` + `npiperelay.exe` bridge, which starts a Windows process
+per connection. Under parallel SSH (Ansible forking many connections) starting Windows processes
+concurrently from WSL hits an interop bug
+([microsoft/WSL #7371](https://github.com/microsoft/WSL/issues/7371),
 [#6891](https://github.com/microsoft/WSL/issues/6891),
 [#53250](https://github.com/microsoft/WSL/issues/53250)) and fails with "communication with agent
 failed". `sockrelay` starts its Windows process once and carries every connection over it.
@@ -19,7 +24,7 @@ failed". `sockrelay` starts its Windows process once and carries every connectio
   connection over its own stream of one [`yamux`](https://docs.rs/yamux) connection over the
   server's stdin and stdout. If that link is lost the client exits, and systemd restarts it.
 - **`sockrelay-server`** (Windows, cross-compiled; WSL runs it natively) relays each stream to a
-  fresh handle on the `ssh-agent` pipe. It exits as soon as the client is gone, so it never
+  fresh handle on the pipe. It exits as soon as the client is gone, so it never
   outlives it.
 
 Starting the server, the yamux connection, watching both ends, logging and systemd integration come
@@ -56,15 +61,15 @@ boundary into a Windows process.
 ### `sockrelay-server`
 
 Started by `sockrelay-client`, which passes every flag; every flag is required, so it never guesses.
-By hand, against a real agent:
+By hand, against the `ssh-agent` pipe:
 
 ```powershell
 sockrelay-server.exe --pipe-path '\\.\pipe\openssh-ssh-agent' --connect-timeout-secs 5 `
   --jitter-max-ms 50 --log-filter info
 ```
 
-- `--connect-timeout-secs` bounds how long a connection waits for a saturated agent once the pipe
-  answers `ERROR_PIPE_BUSY`.
+- `--connect-timeout-secs` bounds how long a connection waits for a saturated pipe server once the
+  pipe answers `ERROR_PIPE_BUSY`.
 - `--jitter-max-ms` is the random pause between busy retries, so waiters woken by the same freed
   pipe instance don't all retry at once.
 - `--log-filter` is the server's `tracing` filter (see [Logging](#logging)).
@@ -93,8 +98,8 @@ export SSH_AUTH_SOCK=~/.ssh/agent.sock
 ```
 
 systemd hears the service is ready only once the relay is known to work. `sockrelay-server` exits at
-once if `--pipe-path` names no running agent, and `sockrelay-client` waits 500ms for the server to
-prove it stays up, so a wrong pipe or a stopped agent fails the start rather than the first
+once if `--pipe-path` names no pipe that exists, and `sockrelay-client` waits 500ms for the server
+to prove it stays up, so a wrong pipe or a stopped pipe server fails the start rather than the first
 connection. Any startup failure exits non-zero with its reason in the journal.
 
 `systemctl --user stop sockrelay` stops gracefully, even while the service is still starting: the
@@ -112,6 +117,28 @@ does:
 ```sh
 RUST_LOG=debug systemd-socket-activate -l "$XDG_RUNTIME_DIR/sockrelay-debug.sock" sockrelay-client
 ```
+
+### Relaying another pipe
+
+The shipped units relay the `ssh-agent` pipe to `~/.ssh/agent.sock`. Any other pipe gets a pair of
+units of its own, under a name of its own, so both relays run side by side. For a pipe
+`\\.\pipe\example` relayed to `$XDG_RUNTIME_DIR/example.sock`, copy `contrib/sockrelay.socket`
+and `contrib/sockrelay.service` to `example-relay.socket` and `example-relay.service` in
+`$XDG_CONFIG_HOME/systemd/user`, then:
+
+- in `example-relay.socket`, set `ListenStream=%t/example.sock` and a `Description` of its own;
+- in `example-relay.service`, set `Requires=` and `After=` to `example-relay.socket` and pass the
+  pipe: `ExecStart=@BINDIR@/sockrelay-client --pipe-path \\\\.\\pipe\\example`, with `@BINDIR@`
+  replaced by the directory holding `sockrelay-client`. systemd reads a backslash in `ExecStart=`
+  as an escape, so each one is doubled.
+
+```sh
+systemctl --user daemon-reload
+systemctl --user enable --now example-relay.socket
+```
+
+The defaults of `--connect-timeout-secs` and `--jitter-max-ms` are tuned for `ssh-agent`; a pipe
+server slower to free an instance may need a longer timeout.
 
 ## Logging
 
@@ -197,8 +224,8 @@ client is unix-only, so only `-p sockrelay-server` builds for Windows.
 - systemd creates the socket with `SocketMode=0600` from `sockrelay.socket`, before the client runs.
 - The relay never retries or respawns: if the link to the server is lost the client exits rather
   than masking it, and systemd restarts it.
-- A saturated agent produces a bounded failure (`--connect-timeout-secs`) rather than a hang or a
-  silently retried request.
+- A saturated pipe server produces a bounded failure (`--connect-timeout-secs`) rather than a hang
+  or a silently retried request.
 
 ## License
 
