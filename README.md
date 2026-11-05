@@ -194,7 +194,8 @@ client is unix-only, so only `-p sockrelay-server` builds for Windows.
 
 Every test has to be able to fail. [`cargo-mutants`](https://mutants.rs) checks that by breaking
 the code one change at a time, and must report no mutant missed. Each crate is mutated where it
-builds — the client on Linux, the server for Windows, in the environment set up above:
+builds — the client on Linux, the server for the Windows target set up above, which has to match
+the host's architecture for WSL to run its tests:
 
 ```sh
 cargo install cargo-mutants
