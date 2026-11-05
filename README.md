@@ -1,8 +1,8 @@
 # sockrelay
 
 `sockrelay` relays a Windows named pipe to a unix socket on the WSL side, so a Linux program can
-talk to a Windows service listening on that pipe. It relays raw bytes both ways and parses nothing,
-and the pipe is `--pipe-path`. It starts its Windows process once and carries every connection over
+talk to a Windows service listening on that pipe. It relays raw bytes both ways and parses nothing;
+`--pipe-path` sets which pipe. It starts its Windows process once and carries every connection over
 it, where a `socat` + `npiperelay.exe` bridge starts a Windows process per connection, and each of
 those tries to open the pipe once: when every pipe instance is busy, the connection just fails.
 
