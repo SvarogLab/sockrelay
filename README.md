@@ -175,8 +175,9 @@ cargo test --workspace
 cargo clippy --workspace --all-targets --all-features -- -D warnings
 ```
 
-`client/tests/stop.rs` runs the built client under `systemd-socket-activate` (from the `systemd`
-package) against a stand-in server script, so it needs that tool on `PATH`.
+`client/tests/socket_activated.rs` runs the built client under `systemd-socket-activate` (from the
+`systemd` package) against a stand-in server script, one of its tests short of file descriptors
+under `prlimit` (from `util-linux`), so it needs both tools on `PATH`.
 
 The server's pipe code only builds for Windows. Its tests run there, cross-compiled; WSL runs the
 test binary natively:
@@ -190,6 +191,24 @@ cargo clippy -p sockrelay-server --all-targets --target aarch64-pc-windows-msvc 
 
 (`cargo xwin env` sets the target's runner to `wine`, which isn't needed here, so it is unset.) The
 client is unix-only, so only `-p sockrelay-server` builds for Windows.
+
+Every test has to be able to fail. [`cargo-mutants`](https://mutants.rs) checks that by breaking
+the code one change at a time, and must report no mutant missed. Each crate is mutated where it
+builds — the client on Linux, the server for Windows, in the environment set up above:
+
+```sh
+cargo install cargo-mutants
+cargo mutants -p sockrelay-client
+cargo mutants -p sockrelay-server --cargo-arg=--target=aarch64-pc-windows-msvc
+```
+
+On Linux the server's pipe code isn't built at all, so every change to it would pass there.
+[`.cargo/mutants.toml`](.cargo/mutants.toml) keeps the output in `target/` and lists the few
+mutants no test can tell from the real code, each with the reason.
+
+There is nothing to fuzz here: the relay passes the agent's bytes through without reading them.
+The inputs it does parse — the mux on the server's stdio, the server's stderr, the log filter —
+belong to [librelay](https://github.com/SvarogLab/librelay), which fuzzes them.
 
 ## Security notes
 
