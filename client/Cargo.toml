@@ -21,6 +21,8 @@ libc = { workspace = true }
 librelay = { workspace = true, features = ["client"] }
 
 [dev-dependencies]
+# The server end of the mux, to relay to in-process.
+librelay = { workspace = true, features = ["server"] }
 tempfile = "3.27.0"
 
 [lints]

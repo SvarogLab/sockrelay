@@ -4,8 +4,11 @@
 use std::os::unix::fs::PermissionsExt;
 use std::os::unix::process::ExitStatusExt;
 
+use std::io::{BufRead, BufReader, ErrorKind};
+use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, ExitStatus, Stdio};
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use tempfile::TempDir;
@@ -20,12 +23,54 @@ struct Relay {
 
 impl Relay {
     fn start(server_body: &str) -> Self {
+        let mut launcher = Command::new("systemd-socket-activate");
+        launcher.stderr(Stdio::null());
+        Self::start_as(server_body, launcher)
+    }
+
+    /// Starts the client allowed only `open_files` file descriptors, and collects what it logs.
+    fn start_short_of_fds(server_body: &str, open_files: u32) -> (Self, Arc<Mutex<String>>) {
+        let mut launcher = Command::new("prlimit");
+        launcher
+            .arg(format!("--nofile={open_files}"))
+            .arg("systemd-socket-activate")
+            // The test waits for a warning, whatever filter its own environment sets.
+            .env("RUST_LOG", "warn")
+            .stderr(Stdio::piped());
+        let mut relay = Self::start_as(server_body, launcher);
+        let log = Arc::new(Mutex::new(String::new()));
+        let stderr = BufReader::new(relay.client.stderr.take().unwrap());
+        let collected = log.clone();
+        std::thread::spawn(move || {
+            for line in stderr.lines().map_while(Result::ok) {
+                collected.lock().unwrap().push_str(&(line + "\n"));
+            }
+        });
+        (relay, log)
+    }
+
+    /// `launcher` ends in `systemd-socket-activate`, which execs the client in its place.
+    fn start_as(server_body: &str, mut launcher: Command) -> Self {
         let dir = tempfile::tempdir().unwrap();
         let server = write_server(dir.path(), server_body);
         let socket = dir.path().join("agent.sock");
-        let client = spawn_socket_activated_client(&socket, &server);
+        let client = launcher
+            .arg("-l")
+            .arg(&socket)
+            .arg(env!("CARGO_BIN_EXE_sockrelay-client"))
+            .arg("--server-exe")
+            .arg(&server)
+            .stdin(Stdio::null())
+            .spawn()
+            .unwrap();
+        // Owned before activating, so a failed activation still kills it on drop.
+        let relay = Self { dir, client };
         activate(&socket);
-        Self { dir, client }
+        relay
+    }
+
+    fn socket(&self) -> PathBuf {
+        self.dir.path().join("agent.sock")
     }
 
     fn wait_for_server(&self) {
@@ -75,23 +120,19 @@ fn write_server(dir: &Path, body: &str) -> PathBuf {
     server
 }
 
-fn spawn_socket_activated_client(socket: &Path, server: &Path) -> Child {
-    Command::new("systemd-socket-activate")
-        .arg("-l")
-        .arg(socket)
-        .arg(env!("CARGO_BIN_EXE_sockrelay-client"))
-        .arg("--server-exe")
-        .arg(server)
-        .stdin(Stdio::null())
-        .stderr(Stdio::null())
-        .spawn()
-        .unwrap()
-}
-
-/// systemd-socket-activate execs the client only once the first connection arrives.
+/// systemd-socket-activate execs the client only once the first connection arrives. The socket's
+/// file appears when it is bound, a moment before it listens, and refuses connections until then.
 fn activate(socket: &Path) {
-    wait_for(|| socket.exists(), "the socket");
-    drop(std::os::unix::net::UnixStream::connect(socket).unwrap());
+    wait_for(
+        || match UnixStream::connect(socket) {
+            Ok(_) => true,
+            Err(e) if matches!(e.kind(), ErrorKind::NotFound | ErrorKind::ConnectionRefused) => {
+                false
+            }
+            Err(e) => panic!("can't connect to the socket: {e}"),
+        },
+        "the socket to listen",
+    );
 }
 
 fn wait_for(ready: impl Fn() -> bool, what: &str) {
@@ -134,4 +175,28 @@ fn a_server_that_outlives_the_stop_fails_it() {
     relay.wait_for_server();
     std::thread::sleep(STARTED);
     assert_eq!(exit_code(relay.stop(Duration::from_secs(10))), Some(1));
+}
+
+/// A burst of connections can leave `accept()` without a file descriptor to give the next one.
+/// That passes once connections close, so the relay retries instead of exiting.
+#[test]
+fn running_out_of_file_descriptors_doesnt_end_the_relay() {
+    const OPEN_FILES: u32 = 64;
+    let (mut relay, log) = Relay::start_short_of_fds("cat >/dev/null", OPEN_FILES);
+    relay.wait_for_server();
+    std::thread::sleep(STARTED);
+
+    let _burst: Vec<_> = (0..2 * OPEN_FILES)
+        .map(|_| UnixStream::connect(relay.socket()).unwrap())
+        .collect();
+    wait_for(
+        || log.lock().unwrap().contains("accept() failed, retrying"),
+        "accept() to run out of file descriptors",
+    );
+    std::thread::sleep(Duration::from_millis(200));
+    assert!(
+        relay.client.try_wait().unwrap().is_none(),
+        "the relay exited: {}",
+        log.lock().unwrap()
+    );
 }

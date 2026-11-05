@@ -36,6 +36,11 @@ the two. Test names are sentences stating the behavior they hold.
 - A failure the process can't recover from (the server is gone, the socket systemd passed is
   unusable) ends the process with a non-zero status; a supervisor restarts it.
 
+## Tests
+
+A test that starts a process owns it before it can fail, so a failed test never leaves one behind
+holding its output open.
+
 ## Comments
 
 Code says what it does; a comment says why, when the reason lives outside the code: a quirk of

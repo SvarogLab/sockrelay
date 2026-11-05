@@ -359,4 +359,63 @@ mod tests {
             .expect("accepting kept retrying an error that can't go away");
         assert_eq!(ended.raw_os_error(), Some(libc::EINVAL));
     }
+
+    #[tokio::test]
+    async fn a_connection_is_relayed_to_the_server_and_back() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        let (near, far) = tokio::io::duplex(64 * 1024);
+        let (handle, driver) = mux::client(near);
+        tokio::spawn(driver);
+        tokio::spawn(librelay::server::mux::serve(far, |stream| async move {
+            let mut stream = stream.compat();
+            let mut request = [0; 4];
+            stream.read_exact(&mut request).await.unwrap();
+            stream.write_all(&request).await.unwrap();
+        }));
+        let (mut peer, connection) = UnixStream::pair().unwrap();
+        tokio::spawn(relay_connection(
+            connection,
+            handle,
+            CancellationToken::new(),
+        ));
+
+        peer.write_all(b"ping").await.unwrap();
+        let mut answer = [0; 4];
+        tokio::time::timeout(Duration::from_secs(5), peer.read_exact(&mut answer))
+            .await
+            .expect("the server's answer never came back")
+            .unwrap();
+        assert_eq!(&answer, b"ping");
+    }
+
+    #[test]
+    fn only_errors_from_the_socket_itself_end_accepting() {
+        for errno in [libc::EBADF, libc::EINVAL, libc::ENOTSOCK, libc::EOPNOTSUPP] {
+            assert!(
+                socket_is_unusable(&io::Error::from_raw_os_error(errno)),
+                "{errno}"
+            );
+        }
+        for errno in [
+            libc::EMFILE,
+            libc::ENFILE,
+            libc::ECONNABORTED,
+            libc::ENOBUFS,
+        ] {
+            assert!(
+                !socket_is_unusable(&io::Error::from_raw_os_error(errno)),
+                "{errno}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_stop_ends_the_relay_cleanly_unless_the_signal_cannot_be_watched() {
+        assert_eq!(stopped(Ok(()), "stopping"), ExitCode::SUCCESS);
+        assert_eq!(
+            stopped(Err(io::Error::other("no handler")), "stopping"),
+            ExitCode::FAILURE
+        );
+    }
 }
