@@ -8,7 +8,7 @@ edition = "2024"
 publish = false
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/SvarogLab/sockrelay"
-description = "Relays a Windows ssh-agent named pipe to a WSL/Linux unix socket over a single multiplexed connection, so parallel SSH connections stop each spawning their own Windows-side process"
+description = "Relays a Windows named pipe, such as the OpenSSH ssh-agent pipe, to a WSL/Linux unix socket over a single multiplexed connection, so parallel connections don't each start a Windows process of their own"
 
 [workspace.dependencies]
 tokio = { version = "1.54.1", features = ["full"] }
