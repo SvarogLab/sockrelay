@@ -12,12 +12,12 @@ async fn main() {
     // stderr only: stdout carries the mux, and anything else written there would corrupt it.
     log::init(&config.log);
 
-    // Checked at startup so a wrong `--pipe-path`, or no service behind it, fails the start (the
+    // Checked at startup so a wrong `--pipe-path`, or no agent running, fails the start (the
     // client's grace period catches the exit) rather than the first relayed connection.
     if !pipe::exists(&config.pipe_path) {
         tracing::error!(
             pipe_path = %config.pipe_path,
-            "the configured named pipe does not exist — is the service behind it running?"
+            "the configured ssh-agent named pipe does not exist — is the real agent running?"
         );
         std::process::exit(1);
     }

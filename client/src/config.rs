@@ -11,7 +11,7 @@ const DEFAULT_PIPE_PATH: &str = r"\\.\pipe\openssh-ssh-agent";
 /// process.
 #[derive(Parser, Debug)]
 #[command(
-    about = "sockrelay Linux/WSL-side relay: exposes a unix socket backed by a Windows named pipe"
+    about = "sockrelay Linux/WSL-side relay: exposes a unix socket backed by the real Windows ssh-agent"
 )]
 pub struct Config {
     /// Path to the `sockrelay-server.exe` to spawn on the Windows side. Defaults to searching
@@ -24,7 +24,7 @@ pub struct Config {
     #[arg(long, default_value_t = 100)]
     pub accept_error_backoff_ms: u64,
 
-    /// Windows named pipe to relay — forwarded to the spawned Windows server as
+    /// Named pipe path for the local ssh-agent — forwarded to the spawned Windows server as
     /// `--pipe-path` (see `server_args`); has no effect on this process itself.
     #[arg(long, default_value = DEFAULT_PIPE_PATH)]
     pub pipe_path: String,
