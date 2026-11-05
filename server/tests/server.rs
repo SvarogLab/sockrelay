@@ -74,8 +74,13 @@ fn spawn_client(
                     Poll::Pending => stream_tx = Some(reply),
                 }
             }
-            while let Poll::Ready(Some(Ok(_))) = connection.poll_next_inbound(cx) {}
-            Poll::<()>::Pending
+            loop {
+                match connection.poll_next_inbound(cx) {
+                    Poll::Ready(Some(Ok(_))) => {}
+                    Poll::Ready(_) => return Poll::Ready(()),
+                    Poll::Pending => return Poll::Pending,
+                }
+            }
         });
         tokio::select! {
             () = driven => {}
@@ -98,7 +103,11 @@ async fn a_stream_reaches_the_agent_and_the_server_exits_once_the_client_is_gone
     let mut server = spawn_server(&path);
     let (stream, close) = spawn_client(&mut server);
 
-    let mut stream = stream.await.unwrap().compat();
+    let mut stream = tokio::time::timeout(Duration::from_secs(10), stream)
+        .await
+        .expect("the client never opened its stream")
+        .unwrap()
+        .compat();
     stream.write_all(b"ping").await.unwrap();
     let mut answer = [0; 4];
     tokio::time::timeout(Duration::from_secs(10), stream.read_exact(&mut answer))

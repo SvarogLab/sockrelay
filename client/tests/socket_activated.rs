@@ -34,6 +34,8 @@ impl Relay {
         launcher
             .arg(format!("--nofile={open_files}"))
             .arg("systemd-socket-activate")
+            // The test waits for a warning, whatever filter its own environment sets.
+            .env("RUST_LOG", "warn")
             .stderr(Stdio::piped());
         let mut relay = Self::start_as(server_body, launcher);
         let log = Arc::new(Mutex::new(String::new()));

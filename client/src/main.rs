@@ -411,7 +411,7 @@ mod tests {
     }
 
     #[test]
-    fn a_stop_signal_that_cannot_be_watched_fails_the_relay() {
+    fn a_stop_ends_the_relay_cleanly_unless_the_signal_cannot_be_watched() {
         assert_eq!(stopped(Ok(()), "stopping"), ExitCode::SUCCESS);
         assert_eq!(
             stopped(Err(io::Error::other("no handler")), "stopping"),
