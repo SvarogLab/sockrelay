@@ -21,8 +21,8 @@ busy pipe.
   connection over its own stream of one [`yamux`](https://docs.rs/yamux) connection over the
   server's stdin and stdout. If that link is lost the client exits, and systemd restarts it.
 - **`sockrelay-server`** (Windows, cross-compiled; WSL runs it natively) relays each stream to a
-  fresh handle on the `ssh-agent` pipe. It exits as soon as the client is gone, so it never
-  outlives it.
+  fresh handle on the pipe, the `ssh-agent` pipe in the example. It exits as soon as the client is
+  gone, so it never outlives it.
 
 Starting the server, the yamux connection, watching both ends, logging and systemd integration come
 from [`librelay`](https://github.com/SvarogLab/librelay), shared with
