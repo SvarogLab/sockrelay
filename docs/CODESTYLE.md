@@ -38,14 +38,8 @@ the two. Test names are sentences stating the behavior they hold.
 
 ## Tests
 
-- Every test must be able to fail: `cargo mutants` reports no mutant missed, for the client on
-  Linux and for the server on Windows. A mutant no test can tell from the real code goes into
-  `exclude_re` in `.cargo/mutants.toml`, with a comment giving the reason; nothing in the code
-  marks it.
-- A test no mutant needs stays only if its doc comment names the behavior it holds: a documented
-  promise, or a contract of the OS, of WSL or of systemd.
-- A test that starts a process owns it before it can fail, so a failed test never leaves one
-  behind holding its output open.
+A test that starts a process owns it before it can fail, so a failed test never leaves one behind
+holding its output open.
 
 ## Comments
 

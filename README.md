@@ -192,25 +192,6 @@ cargo clippy -p sockrelay-server --all-targets --target aarch64-pc-windows-msvc 
 (`cargo xwin env` sets the target's runner to `wine`, which isn't needed here, so it is unset.) The
 client is unix-only, so only `-p sockrelay-server` builds for Windows.
 
-Every test has to be able to fail. [`cargo-mutants`](https://mutants.rs) checks that by breaking
-the code one change at a time, and must report no mutant missed. Each crate is mutated where it
-builds — the client on Linux, the server for the Windows target set up above, which has to match
-the host's architecture for WSL to run its tests:
-
-```sh
-cargo install cargo-mutants
-cargo mutants -p sockrelay-client
-cargo mutants -p sockrelay-server --cargo-arg=--target=aarch64-pc-windows-msvc
-```
-
-On Linux the server's pipe code isn't built at all, so every change to it would pass there.
-[`.cargo/mutants.toml`](.cargo/mutants.toml) keeps the output in `target/` and lists the few
-mutants no test can tell from the real code, each with the reason.
-
-There is nothing to fuzz here: the relay passes the agent's bytes through without reading them.
-The inputs it does parse — the mux on the server's stdio, the server's stderr, the log filter —
-belong to [librelay](https://github.com/SvarogLab/librelay), which fuzzes them.
-
 ## Security notes
 
 - systemd creates the socket with `SocketMode=0600` from `sockrelay.socket`, before the client runs.
