@@ -12,7 +12,7 @@ permissions:
 
 jobs:
   release-pr:
-    uses: SvarogLab/.github/.github/workflows/release-pr.yml@v2
+    uses: SvarogLab/.github/.github/workflows/release-pr.yml@v2.1
     permissions:
       contents: write
       pull-requests: write
