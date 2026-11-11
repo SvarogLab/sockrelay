@@ -1,0 +1,36 @@
+# A starting point for a crate licensed MIT OR Apache-2.0: every license below can ship
+# under both. A crate under another license states its own list in its own copy.
+
+[graph]
+# Every feature, so a dependency only a feature pulls in is still checked.
+all-features = true
+
+[licenses]
+allow = [
+  "MIT",
+  "Apache-2.0",
+  "Apache-2.0 WITH LLVM-exception",
+  "BSD-2-Clause",
+  "BSD-3-Clause",
+  "ISC",
+  "Unicode-3.0",
+  "Zlib",
+  "CDLA-Permissive-2.0",
+]
+confidence-threshold = 0.93
+
+[licenses.private]
+# A workspace member that is never published ships under nothing of its own.
+ignore = true
+
+[bans]
+multiple-versions = "warn"
+wildcards = "deny"
+# A path dependency inside the workspace carries no version and is not a wildcard.
+allow-wildcard-paths = true
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+# librelay is ours and comes from a release tag, not crates.io.
+allow-org = { github = ["SvarogLab"] }
