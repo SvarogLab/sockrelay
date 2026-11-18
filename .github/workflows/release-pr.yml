@@ -12,11 +12,12 @@ permissions:
 
 jobs:
   release-pr:
-    uses: SvarogLab/.github/.github/workflows/release-pr.yml@v2.1
+    uses: SvarogLab/.github/.github/workflows/release-pr.yml@v3
     permissions:
-      contents: write
-      pull-requests: write
+      contents: read
     with:
       version: ${{ inputs.version }}
       # The workspace carries the one version both crates inherit.
       bump: sed -i "s/^version = \".*\"/version = \"$VERSION_NUMBER\"/" Cargo.toml
+    secrets:
+      CI_APP_PRIVATE_KEY: ${{ secrets.CI_APP_PRIVATE_KEY }}
